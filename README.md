@@ -31,6 +31,13 @@ Claude Context without the cloud. Semantic code search that runs 100% locally us
 
 An intelligent code search system that uses Google's EmbeddingGemma model and AST-based chunking to provide semantic search capabilities for all your codebases, integrated with Claude Code via MCP (Model Context Protocol).
 
+## 🚧 Beta Release
+
+- Core functionality working
+- Installation tested on Mac/Linux
+- Benchmarks coming soon
+- Please report issues!
+
 ## Demo
 
 <img src="https://github.com/FarhanAliRaza/claude-context-local/releases/download/v0.1/example.gif" alt="Demo of local semantic code search" width="900" />
