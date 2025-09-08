@@ -13,7 +13,7 @@ def test_chunking():
     """Test AST-based chunking."""
     print("Testing AST-based chunking...")
     
-    from chunking.python_ast_chunker import PythonASTChunker
+    from chunking.multi_language_chunker import MultiLanguageChunker
     
     # Create a more complex test Python file
     test_code = '''
@@ -96,7 +96,7 @@ def get_user_profile(user_id: int) -> Dict:
         f.flush()
         
         # Test chunking
-        chunker = PythonASTChunker(os.path.dirname(f.name))
+        chunker = MultiLanguageChunker(os.path.dirname(f.name))
         chunks = chunker.chunk_file(f.name)
         
         print(f"\n✅ Generated {len(chunks)} chunks from test file:")
@@ -126,7 +126,7 @@ def test_metadata_richness():
     print("\n" + "="*60)
     print("Testing metadata extraction richness...")
     
-    from chunking.python_ast_chunker import PythonASTChunker
+    from chunking.multi_language_chunker import MultiLanguageChunker
     
     # Create a test file in a nested directory structure
     test_dir = tempfile.mkdtemp()
@@ -182,7 +182,7 @@ class UserAuthenticator:
     test_file.write_text(test_code)
     
     # Test chunking with the nested structure
-    chunker = PythonASTChunker(str(project_dir))
+    chunker = MultiLanguageChunker(str(project_dir))
     chunks = chunker.chunk_file(str(test_file))
     
     print(f"\n✅ Generated {len(chunks)} chunks from nested project structure:")

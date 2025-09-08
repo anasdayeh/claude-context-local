@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from search.incremental_indexer import IncrementalIndexer
 from search.indexer import CodeIndexManager
 from embeddings.embedder import CodeEmbedder
-from chunking.python_ast_chunker import PythonASTChunker
+from chunking.multi_language_chunker import MultiLanguageChunker
 from search.searcher import IntelligentSearcher
 
 
@@ -38,7 +38,7 @@ def test_auto_reindex():
     
     embedder = CodeEmbedder(cache_dir=str(storage_dir / "models"))
     index_manager = CodeIndexManager(str(index_dir))
-    chunker = PythonASTChunker(str(test_project))
+    chunker = MultiLanguageChunker(str(test_project))
     
     indexer = IncrementalIndexer(
         indexer=index_manager,

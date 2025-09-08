@@ -12,9 +12,11 @@ project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 try:
-    from chunking.python_ast_chunker import PythonASTChunker
+    from chunking.multi_language_chunker import MultiLanguageChunker
+    from embeddings.embedder import CodeEmbedder
 except ImportError:
-    PythonASTChunker = None
+    MultiLanguageChunker = None
+    CodeEmbedder = None
 
 try:
     from tests.fixtures.sample_code import (
@@ -145,11 +147,11 @@ def sample_codebase(temp_project_dir: Path) -> Dict[str, Path]:
 
 
 @pytest.fixture
-def chunker(temp_project_dir: Path) -> 'PythonASTChunker':
-    """Create a PythonASTChunker instance."""
-    if not PythonASTChunker:
-        pytest.skip("PythonASTChunker not available")
-    return PythonASTChunker(str(temp_project_dir))
+def chunker(temp_project_dir: Path) -> 'MultiLanguageChunker':
+    """Create a MultiLanguageChunker instance."""
+    if not MultiLanguageChunker:
+        pytest.skip("MultiLanguageChunker not available")
+    return MultiLanguageChunker(str(temp_project_dir))
 
 
 @pytest.fixture  
@@ -210,3 +212,24 @@ def ensure_model_downloaded(test_config):
         pytest.skip("Download script not found")
     
     return True
+
+
+@pytest.fixture
+def embedder_with_cleanup(mock_storage_dir):
+    """Create a CodeEmbedder with proper GPU memory cleanup."""
+    if not CodeEmbedder:
+        pytest.skip("CodeEmbedder not available")
+    
+    # Create embedder with CPU device to avoid GPU memory issues
+    embedder = CodeEmbedder(
+        cache_dir=str(mock_storage_dir / "models"),
+        device="cpu"  # Force CPU for tests to avoid VRAM issues
+    )
+    
+    yield embedder
+    
+    # Cleanup after test
+    try:
+        embedder.cleanup()
+    except Exception:
+        pass

@@ -6,7 +6,7 @@ from unittest import TestCase
 
 import pytest
 
-from chunking.tree_sitter_fixed import (
+from chunking.tree_sitter import (
     PythonChunker, JavaScriptChunker, TreeSitterChunker
 )
 
@@ -173,7 +173,7 @@ class TestTreeSitterChunker(TestCase):
     def test_language_detection(self):
         """Test language detection from file extension."""
         # Check if Python is supported (requires tree-sitter-python)
-        import chunking.tree_sitter_fixed as tsf
+        import chunking.tree_sitter as tsf
         if 'python' in tsf.AVAILABLE_LANGUAGES:
             assert self.chunker.is_supported('test.py')
         
@@ -183,7 +183,7 @@ class TestTreeSitterChunker(TestCase):
     
     def test_chunk_python_file(self):
         """Test chunking a Python file."""
-        import chunking.tree_sitter_fixed as tsf
+        import chunking.tree_sitter as tsf
         if 'python' not in tsf.AVAILABLE_LANGUAGES:
             self.skipTest("tree-sitter-python not installed")
             
@@ -212,7 +212,7 @@ class TestClass:
         extensions = TreeSitterChunker.get_supported_extensions()
         
         # At minimum Python should be supported if tree-sitter-python is installed
-        import chunking.tree_sitter_fixed as tsf
+        import chunking.tree_sitter as tsf
         if 'python' in tsf.AVAILABLE_LANGUAGES:
             assert '.py' in extensions
     
@@ -221,7 +221,7 @@ class TestClass:
         languages = TreeSitterChunker.get_available_languages()
         
         # Should have at least Python if installed
-        import chunking.tree_sitter_fixed as tsf
+        import chunking.tree_sitter as tsf
         if 'python' in tsf.AVAILABLE_LANGUAGES:
             assert 'python' in languages
 

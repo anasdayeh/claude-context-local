@@ -13,7 +13,7 @@ from merkle.change_detector import ChangeDetector
 from search.incremental_indexer import IncrementalIndexer, IncrementalIndexResult
 from search.indexer import CodeIndexManager as Indexer
 from embeddings.embedder import CodeEmbedder
-from chunking.python_ast_chunker import PythonASTChunker
+from chunking.multi_language_chunker import MultiLanguageChunker
 
 
 class TestIncrementalIndexing(TestCase):
@@ -88,7 +88,7 @@ class Database:
         """Test full indexing of a codebase."""
         indexer = Indexer(storage_dir=str(self.index_dir))
         embedder = CodeEmbedder()
-        chunker = PythonASTChunker(str(self.test_path))
+        chunker = MultiLanguageChunker(str(self.test_path))
         
         incremental_indexer = IncrementalIndexer(
             indexer=indexer,
@@ -116,7 +116,7 @@ class Database:
         """Test indexing when no changes occur."""
         indexer = Indexer(storage_dir=str(self.index_dir))
         embedder = CodeEmbedder()
-        chunker = PythonASTChunker(str(self.test_path))
+        chunker = MultiLanguageChunker(str(self.test_path))
         
         incremental_indexer = IncrementalIndexer(
             indexer=indexer,
@@ -148,7 +148,7 @@ class Database:
         """Test incremental indexing when files are modified."""
         indexer = Indexer(storage_dir=str(self.index_dir))
         embedder = CodeEmbedder()
-        chunker = PythonASTChunker(str(self.test_path))
+        chunker = MultiLanguageChunker(str(self.test_path))
         
         incremental_indexer = IncrementalIndexer(
             indexer=indexer,
@@ -203,7 +203,7 @@ class Calculator:
         """Test incremental indexing when files are added."""
         indexer = Indexer(storage_dir=str(self.index_dir))
         embedder = CodeEmbedder()
-        chunker = PythonASTChunker(str(self.test_path))
+        chunker = MultiLanguageChunker(str(self.test_path))
         
         incremental_indexer = IncrementalIndexer(
             indexer=indexer,
@@ -245,7 +245,7 @@ class NewClass:
         """Test incremental indexing when files are deleted."""
         indexer = Indexer(storage_dir=str(self.index_dir))
         embedder = CodeEmbedder()
-        chunker = PythonASTChunker(str(self.test_path))
+        chunker = MultiLanguageChunker(str(self.test_path))
         
         incremental_indexer = IncrementalIndexer(
             indexer=indexer,
@@ -304,7 +304,7 @@ class NewClass:
         """Test checking if reindex is needed."""
         indexer = Indexer(storage_dir=str(self.index_dir))
         embedder = CodeEmbedder()
-        chunker = PythonASTChunker(str(self.test_path))
+        chunker = MultiLanguageChunker(str(self.test_path))
         
         incremental_indexer = IncrementalIndexer(
             indexer=indexer,
@@ -335,7 +335,7 @@ class NewClass:
         """Test getting indexing statistics."""
         indexer = Indexer(storage_dir=str(self.index_dir))
         embedder = CodeEmbedder()
-        chunker = PythonASTChunker(str(self.test_path))
+        chunker = MultiLanguageChunker(str(self.test_path))
         
         incremental_indexer = IncrementalIndexer(
             indexer=indexer,

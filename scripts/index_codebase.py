@@ -9,7 +9,7 @@ from pathlib import Path
 # Add the parent directory to the path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from chunking.python_ast_chunker import PythonASTChunker
+from chunking.multi_language_chunker import MultiLanguageChunker
 from embeddings.embedder import CodeEmbedder
 from search.indexer import CodeIndexManager
 
@@ -78,7 +78,7 @@ def main():
         
         # Initialize components
         logger.info("Initializing components...")
-        chunker = PythonASTChunker(str(directory_path))
+        chunker = MultiLanguageChunker(str(directory_path))
         
         # Initialize embedder with cache in storage directory
         models_dir = storage_dir / "models"

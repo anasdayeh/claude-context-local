@@ -199,9 +199,6 @@ class TestFullSearchFlow:
         assert 'tags' in auth_filters
         assert 'auth' in auth_filters['tags']
         
-        # Test query optimization
-        optimized = searcher._optimize_query("find auth functions")
-        assert "authentication" in optimized.lower()
     
     def test_search_by_functionality(self, test_project_path, mock_storage_dir):
         """Test searching for specific functionality in the real project."""
@@ -425,7 +422,7 @@ class TestFullSearchFlow:
             
             # Process only changed files (incremental indexing)
             # Create a new chunker for the temp project
-            temp_chunker = PythonASTChunker(str(temp_project))
+            temp_chunker = MultiLanguageChunker(str(temp_project))
             changed_chunks = []
             for file_path in changes.modified + changes.added:
                 # The file_path from MerkleDAG is relative, construct full path

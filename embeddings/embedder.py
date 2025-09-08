@@ -264,6 +264,28 @@ class CodeEmbedder:
             "device": str(self._model.device),
             "status": "loaded"
         }
+    
+    def cleanup(self):
+        """Clean up model from memory to free GPU/CPU resources."""
+        if self._model is not None:
+            try:
+                # Move model to CPU and delete
+                if hasattr(self._model, 'to'):
+                    self._model.to('cpu')
+                if torch is not None and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                del self._model
+                self._model = None
+                self._logger.info("Model cleaned up and memory freed")
+            except Exception as e:
+                self._logger.warning(f"Error during model cleanup: {e}")
+    
+    def __del__(self):
+        """Ensure cleanup when object is destroyed."""
+        try:
+            self.cleanup()
+        except:
+            pass
 
     def _is_model_cached(self) -> bool:
         """Best-effort check if the target model seems cached in cache_dir.

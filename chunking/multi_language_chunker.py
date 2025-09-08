@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Optional, Union
 
 from .python_ast_chunker import CodeChunk
-from .tree_sitter_fixed import TreeSitterChunker, TreeSitterChunk
+from .tree_sitter import TreeSitterChunker, TreeSitterChunk
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +20,16 @@ class MultiLanguageChunker:
         '.jsx',   # JSX
         '.ts',    # TypeScript
         '.tsx',   # TSX
-        '.svelte' # Svelte
+        '.svelte', # Svelte
+        '.go',    # Go
+        '.rs',    # Rust
+        '.java',  # Java
+        '.c',     # C
+        '.cpp',   # C++
+        '.cc',    # C++
+        '.cxx',   # C++
+        '.c++',   # C++
+        '.cs'     # C#
     }
     
     # Common large/build/tooling directories to skip during traversal
@@ -109,14 +118,37 @@ class MultiLanguageChunker:
                 'function_definition': 'function',
                 'arrow_function': 'function',
                 'function': 'function',
+                'function_item': 'function',  # Rust
+                'method_declaration': 'method',  # Go, Java
+                'method_definition': 'method',
                 'class_declaration': 'class',
                 'class_definition': 'class',
-                'method_definition': 'method',
+                'class_specifier': 'class',  # C++
                 'interface_declaration': 'interface',
                 'type_alias_declaration': 'type',
+                'type_declaration': 'type',  # Go
                 'enum_declaration': 'enum',
-                'script_element': 'script',
-                'style_element': 'style',
+                'enum_specifier': 'enum',  # C
+                'enum_item': 'enum',  # Rust
+                'struct_declaration': 'struct',  # C#
+                'struct_specifier': 'struct',  # C/C++
+                'struct_item': 'struct',  # Rust
+                'union_specifier': 'union',  # C/C++
+                'namespace_definition': 'namespace',  # C++
+                'namespace_declaration': 'namespace',  # C#
+                'impl_item': 'impl',  # Rust
+                'trait_item': 'trait',  # Rust
+                'mod_item': 'module',  # Rust
+                'macro_definition': 'macro',  # Rust
+                'constructor_declaration': 'constructor',  # Java/C#
+                'destructor_declaration': 'destructor',  # C#
+                'property_declaration': 'property',  # C#
+                'event_declaration': 'event',  # C#
+                'template_declaration': 'template',  # C++
+                'concept_definition': 'concept',  # C++
+                'annotation_type_declaration': 'annotation',  # Java
+                'script_element': 'script',  # Svelte
+                'style_element': 'style',  # Svelte
             }
             
             chunk_type = chunk_type_map.get(tchunk.node_type, tchunk.node_type)

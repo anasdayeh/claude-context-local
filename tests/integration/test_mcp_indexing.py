@@ -9,7 +9,7 @@ import pytest
 from search.incremental_indexer import IncrementalIndexer
 from search.indexer import CodeIndexManager
 from embeddings.embedder import CodeEmbedder
-from chunking.python_ast_chunker import PythonASTChunker
+from chunking.multi_language_chunker import MultiLanguageChunker
 from merkle.snapshot_manager import SnapshotManager
 
 
@@ -38,7 +38,7 @@ class TestMCPIndexing:
         # Initialize components EXACTLY as in the MCP tool
         index_manager = CodeIndexManager(str(mock_storage_dir))
         embedder = CodeEmbedder()
-        chunker = PythonASTChunker(str(directory_path))  # Initialize with project root
+        chunker = MultiLanguageChunker(str(directory_path))  # Initialize with project root
         
         incremental_indexer = IncrementalIndexer(
             indexer=index_manager,
@@ -77,12 +77,16 @@ class TestMCPIndexing:
         # Assertions - the real tool should work!
         assert result.success, f"Indexing failed: {result.error}"
         assert result.files_added > 0, "Should have indexed some files"
+        
         assert result.chunks_added > 0, "Should have created chunks from the files"
         
         # Verify the response structure matches what MCP returns
         assert response["success"] is True
         assert response["files_added"] > 0
         assert response["chunks_added"] > 0
+        
+        # Cleanup embedder to free GPU memory
+        embedder.cleanup()
         
         print(f"MCP Response: {json.dumps(response, indent=2)}")
         
@@ -100,7 +104,7 @@ class TestMCPIndexing:
             # First index - full
             index_manager = CodeIndexManager(str(mock_storage_dir))
             embedder = CodeEmbedder()
-            chunker = PythonASTChunker(str(temp_project))
+            chunker = MultiLanguageChunker(str(temp_project))
             
             incremental_indexer = IncrementalIndexer(
                 indexer=index_manager,
@@ -128,7 +132,7 @@ class TestMCPIndexing:
             
             # Re-index with incremental=True (MCP default)
             # Need to create new chunker for modified project
-            chunker2 = PythonASTChunker(str(temp_project))
+            chunker2 = MultiLanguageChunker(str(temp_project))
             incremental_indexer2 = IncrementalIndexer(
                 indexer=index_manager,
                 embedder=embedder,
@@ -152,13 +156,16 @@ class TestMCPIndexing:
             print(f"Incremental update: {result2.files_modified} files modified, "
                   f"{result2.chunks_added} chunks added, {result2.chunks_removed} removed")
             
+            # Cleanup embedder to free GPU memory  
+            embedder.cleanup()
+            
     def test_catches_chunk_file_bug(self, test_project_path, mock_storage_dir):
         """Test that would catch the chunk_file(path, content) bug."""
         
         directory_path = Path(test_project_path).resolve()
         
         # Create a mock chunker that validates the signature
-        class StrictChunker(PythonASTChunker):
+        class StrictChunker(MultiLanguageChunker):
             def chunk_file(self, file_path: str) -> list:
                 # This will fail if called with extra arguments
                 # simulating the actual signature
@@ -183,3 +190,6 @@ class TestMCPIndexing:
         
         assert result.success, f"Failed with error: {result.error}"
         assert result.chunks_added > 0, "Should have created chunks"
+        
+        # Cleanup embedder to free GPU memory
+        embedder.cleanup()

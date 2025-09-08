@@ -61,6 +61,30 @@ try:
 except ImportError:
     logger.debug("tree-sitter-rust not installed")
 
+try:
+    import tree_sitter_java as tsjava
+    AVAILABLE_LANGUAGES['java'] = Language(tsjava.language())
+except ImportError:
+    logger.debug("tree-sitter-java not installed")
+
+try:
+    import tree_sitter_c as tsc
+    AVAILABLE_LANGUAGES['c'] = Language(tsc.language())
+except ImportError:
+    logger.debug("tree-sitter-c not installed")
+
+try:
+    import tree_sitter_cpp as tscpp
+    AVAILABLE_LANGUAGES['cpp'] = Language(tscpp.language())
+except ImportError:
+    logger.debug("tree-sitter-cpp not installed")
+
+try:
+    import tree_sitter_c_sharp as tscsharp
+    AVAILABLE_LANGUAGES['csharp'] = Language(tscsharp.language())
+except ImportError:
+    logger.debug("tree-sitter-c-sharp not installed")
+
 
 @dataclass
 class TreeSitterChunk:
@@ -487,6 +511,299 @@ class SvelteChunker(LanguageChunker):
         return metadata
 
 
+class GoChunker(LanguageChunker):
+    """Go-specific chunker using tree-sitter."""
+    
+    def __init__(self):
+        super().__init__('go')
+    
+    def _get_splittable_node_types(self) -> Set[str]:
+        """Go-specific splittable node types."""
+        return {
+            'function_declaration',
+            'method_declaration',
+            'type_declaration',
+            'interface_declaration',
+            'struct_declaration',
+        }
+    
+    def extract_metadata(self, node: Any, source: bytes) -> Dict[str, Any]:
+        """Extract Go-specific metadata."""
+        metadata = {'node_type': node.type}
+        
+        # Extract function/method/type name
+        for child in node.children:
+            if child.type == 'identifier':
+                metadata['name'] = self.get_node_text(child, source)
+                break
+        
+        # For methods, extract receiver type
+        if node.type == 'method_declaration':
+            for child in node.children:
+                if child.type == 'parameter_list':
+                    # First parameter_list is the receiver
+                    for receiver_child in child.children:
+                        if receiver_child.type == 'parameter_declaration':
+                            for param_child in receiver_child.children:
+                                if param_child.type in ['identifier', 'pointer_type', 'type_identifier']:
+                                    metadata['receiver_type'] = self.get_node_text(param_child, source)
+                                    break
+                            break
+                    break
+        
+        return metadata
+
+
+class RustChunker(LanguageChunker):
+    """Rust-specific chunker using tree-sitter."""
+    
+    def __init__(self):
+        super().__init__('rust')
+    
+    def _get_splittable_node_types(self) -> Set[str]:
+        """Rust-specific splittable node types."""
+        return {
+            'function_item',
+            'impl_item',
+            'struct_item',
+            'enum_item',
+            'trait_item',
+            'mod_item',
+            'macro_definition',
+        }
+    
+    def extract_metadata(self, node: Any, source: bytes) -> Dict[str, Any]:
+        """Extract Rust-specific metadata."""
+        metadata = {'node_type': node.type}
+        
+        # Extract name (identifier or type_identifier)
+        for child in node.children:
+            if child.type in ['identifier', 'type_identifier']:
+                metadata['name'] = self.get_node_text(child, source)
+                break
+        
+        # Check for async functions
+        if node.type == 'function_item':
+            for child in node.children:
+                if child.type == 'async' or self.get_node_text(child, source) == 'async':
+                    metadata['is_async'] = True
+                    break
+        
+        # Extract impl type for impl blocks
+        if node.type == 'impl_item':
+            for child in node.children:
+                if child.type in ['type_identifier', 'generic_type']:
+                    metadata['impl_type'] = self.get_node_text(child, source)
+                    break
+        
+        return metadata
+
+
+class JavaChunker(LanguageChunker):
+    """Java-specific chunker using tree-sitter."""
+    
+    def __init__(self):
+        super().__init__('java')
+    
+    def _get_splittable_node_types(self) -> Set[str]:
+        """Java-specific splittable node types."""
+        return {
+            'method_declaration',
+            'constructor_declaration',
+            'class_declaration',
+            'interface_declaration',
+            'enum_declaration',
+            'annotation_type_declaration',
+        }
+    
+    def extract_metadata(self, node: Any, source: bytes) -> Dict[str, Any]:
+        """Extract Java-specific metadata."""
+        metadata = {'node_type': node.type}
+        
+        # Extract name
+        for child in node.children:
+            if child.type == 'identifier':
+                metadata['name'] = self.get_node_text(child, source)
+                break
+        
+        # Extract access modifiers
+        modifiers = []
+        for child in node.children:
+            if child.type == 'modifiers':
+                for modifier in child.children:
+                    if modifier.type in ['public', 'private', 'protected', 'static', 'final', 'abstract', 'synchronized']:
+                        modifiers.append(self.get_node_text(modifier, source))
+        
+        if modifiers:
+            metadata['modifiers'] = modifiers
+        
+        # Check for generic parameters
+        for child in node.children:
+            if child.type == 'type_parameters':
+                metadata['has_generics'] = True
+                break
+        
+        return metadata
+
+
+class CChunker(LanguageChunker):
+    """C-specific chunker using tree-sitter."""
+    
+    def __init__(self):
+        super().__init__('c')
+    
+    def _get_splittable_node_types(self) -> Set[str]:
+        """C-specific splittable node types."""
+        return {
+            'function_definition',
+            'struct_specifier',
+            'union_specifier',
+            'enum_specifier',
+            'type_definition',
+        }
+    
+    def extract_metadata(self, node: Any, source: bytes) -> Dict[str, Any]:
+        """Extract C-specific metadata."""
+        metadata = {'node_type': node.type}
+        
+        # Extract function name
+        if node.type == 'function_definition':
+            # Look for function_declarator
+            for child in node.children:
+                if child.type == 'function_declarator':
+                    for declarator_child in child.children:
+                        if declarator_child.type == 'identifier':
+                            metadata['name'] = self.get_node_text(declarator_child, source)
+                            break
+                    break
+        
+        # Extract struct/union/enum name
+        elif node.type in ['struct_specifier', 'union_specifier', 'enum_specifier']:
+            for child in node.children:
+                if child.type in ['type_identifier', 'identifier']:
+                    metadata['name'] = self.get_node_text(child, source)
+                    break
+        
+        # Extract typedef name
+        elif node.type == 'type_definition':
+            # Look for the last identifier which is the new type name
+            identifiers = []
+            for child in node.children:
+                if child.type == 'identifier':
+                    identifiers.append(self.get_node_text(child, source))
+            if identifiers:
+                metadata['name'] = identifiers[-1]
+        
+        return metadata
+
+
+class CppChunker(LanguageChunker):
+    """C++-specific chunker using tree-sitter."""
+    
+    def __init__(self):
+        super().__init__('cpp')
+    
+    def _get_splittable_node_types(self) -> Set[str]:
+        """C++-specific splittable node types."""
+        return {
+            'function_definition',
+            'class_specifier',
+            'struct_specifier',
+            'union_specifier',
+            'enum_specifier',
+            'namespace_definition',
+            'template_declaration',
+            'concept_definition',
+        }
+    
+    def extract_metadata(self, node: Any, source: bytes) -> Dict[str, Any]:
+        """Extract C++-specific metadata."""
+        metadata = {'node_type': node.type}
+        
+        # Extract name
+        if node.type == 'function_definition':
+            # Look for function_declarator
+            for child in node.children:
+                if child.type == 'function_declarator':
+                    for declarator_child in child.children:
+                        if declarator_child.type in ['identifier', 'qualified_identifier']:
+                            metadata['name'] = self.get_node_text(declarator_child, source)
+                            break
+                    break
+        
+        elif node.type in ['class_specifier', 'struct_specifier', 'namespace_definition']:
+            for child in node.children:
+                if child.type in ['type_identifier', 'identifier']:
+                    metadata['name'] = self.get_node_text(child, source)
+                    break
+        
+        # Check for template parameters
+        if node.type == 'template_declaration':
+            metadata['is_template'] = True
+            # Get the templated entity name
+            for child in node.children:
+                if child.type in ['function_definition', 'class_specifier']:
+                    child_metadata = self.extract_metadata(child, source)
+                    if 'name' in child_metadata:
+                        metadata['name'] = child_metadata['name']
+                    break
+        
+        return metadata
+
+
+class CSharpChunker(LanguageChunker):
+    """C#-specific chunker using tree-sitter."""
+    
+    def __init__(self):
+        super().__init__('csharp')
+    
+    def _get_splittable_node_types(self) -> Set[str]:
+        """C#-specific splittable node types."""
+        return {
+            'method_declaration',
+            'constructor_declaration',
+            'destructor_declaration',
+            'class_declaration',
+            'struct_declaration',
+            'interface_declaration',
+            'enum_declaration',
+            'namespace_declaration',
+            'property_declaration',
+            'event_declaration',
+        }
+    
+    def extract_metadata(self, node: Any, source: bytes) -> Dict[str, Any]:
+        """Extract C#-specific metadata."""
+        metadata = {'node_type': node.type}
+        
+        # Extract name
+        for child in node.children:
+            if child.type == 'identifier':
+                metadata['name'] = self.get_node_text(child, source)
+                break
+        
+        # Extract access modifiers
+        modifiers = []
+        for child in node.children:
+            if child.type == 'modifier':
+                modifier_text = self.get_node_text(child, source)
+                if modifier_text in ['public', 'private', 'protected', 'internal', 'static', 'virtual', 'abstract', 'override', 'async']:
+                    modifiers.append(modifier_text)
+        
+        if modifiers:
+            metadata['modifiers'] = modifiers
+            if 'async' in modifiers:
+                metadata['is_async'] = True
+        
+        # Check for generic parameters
+        for child in node.children:
+            if child.type == 'type_parameter_list':
+                metadata['has_generics'] = True
+                break
+        
+        return metadata
+
+
 class TreeSitterChunker:
     """Main tree-sitter chunker that delegates to language-specific implementations."""
     
@@ -498,6 +815,15 @@ class TreeSitterChunker:
         '.ts': ('typescript', lambda: TypeScriptChunker(use_tsx=False)),
         '.tsx': ('tsx', lambda: TypeScriptChunker(use_tsx=True)),
         '.svelte': ('svelte', SvelteChunker),
+        '.go': ('go', GoChunker),
+        '.rs': ('rust', RustChunker),
+        '.java': ('java', JavaChunker),
+        '.c': ('c', CChunker),
+        '.cpp': ('cpp', CppChunker),
+        '.cc': ('cpp', CppChunker),
+        '.cxx': ('cpp', CppChunker),
+        '.c++': ('cpp', CppChunker),
+        '.cs': ('csharp', CSharpChunker),
     }
     
     def __init__(self):

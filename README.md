@@ -29,7 +29,7 @@ Claude Context without the cloud. Semantic code search that runs 100% locally us
 - 💰 **Zero API costs - forever free**
 - ⚡ **Fewer tokens in Claude Code and fast local searches**
 
-An intelligent code search system that uses Google's EmbeddingGemma model and AST-based chunking to provide semantic search capabilities for all your codebases, integrated with Claude Code via MCP (Model Context Protocol).
+An intelligent code search system that uses Google's EmbeddingGemma model and advanced multi-language chunking to provide semantic search capabilities across 15 file extensions and 9+ programming languages, integrated with Claude Code via MCP (Model Context Protocol).
 
 ## 🚧 Beta Release
 
@@ -44,9 +44,10 @@ An intelligent code search system that uses Google's EmbeddingGemma model and AS
 
 ## Features
 
-- **Intelligent AST-based chunking**: Preserves function and class boundaries
-- **Semantic search**: Natural language queries to find code
-- **Rich metadata**: File paths, folder structure, semantic tags
+- **Multi-language support**: 9+ programming languages with 15 file extensions
+- **Intelligent chunking**: AST-based (Python) + tree-sitter (JS/TS/Go/Java/Rust/C/C++/C#)
+- **Semantic search**: Natural language queries to find code across all languages
+- **Rich metadata**: File paths, folder structure, semantic tags, language-specific info
 - **MCP integration**: Direct integration with Claude Code
 - **Local processing**: All embeddings stored locally, no API calls
 - **Fast search**: FAISS for efficient similarity search
@@ -121,10 +122,10 @@ Interact via chat inside Claude Code; no function calls or commands are required
 
 ```
 claude-context-local/
-├── chunking/                         # Multi-language chunking
+├── chunking/                         # Multi-language chunking (15 extensions)
 │   ├── multi_language_chunker.py     # Unified orchestrator (Python AST + tree-sitter)
 │   ├── python_ast_chunker.py         # Python-specific chunking (rich metadata)
-│   └── tree_sitter_fixed.py          # JS/TS/JSX/TSX/Svelte chunking
+│   └── tree_sitter.py                # Tree-sitter: JS/TS/JSX/TSX/Svelte/Go/Java/Rust/C/C++/C#
 ├── embeddings/
 │   └── embedder.py                   # EmbeddingGemma; device=auto (CUDA→MPS→CPU); offline cache
 ├── search/
@@ -164,19 +165,27 @@ graph TD
 
 ## Intelligent Chunking
 
-The system uses tree-sitter for PY/JS/TS/JSX/TSX/Svelte to create semantically meaningful chunks:
+The system uses advanced parsing to create semantically meaningful chunks across all supported languages:
 
-- **Complete functions** with docstrings and decorators
-- **Full classes** with all methods as separate chunks
-- **Module-level code** blocks and constants
-- **Preserved context** with imports and parent references
+### Chunking Strategies
+- **Python**: AST-based parsing for rich metadata extraction
+- **All other languages**: Tree-sitter parsing with language-specific node type recognition
 
-Each chunk includes rich metadata:
+### Chunk Types Extracted
+- **Functions/Methods**: Complete with signatures, docstrings, decorators
+- **Classes/Structs**: Full definitions with member functions as separate chunks
+- **Interfaces/Traits**: Type definitions and contracts
+- **Enums/Constants**: Value definitions and module-level declarations
+- **Namespaces/Modules**: Organizational structures
+- **Templates/Generics**: Parameterized type definitions
 
+### Rich Metadata for All Languages
 - File path and folder structure
-- Function/class names and relationships
-- Complexity scores
-- Line numbers for precise location
+- Function/class/type names and relationships
+- Language-specific features (async, generics, modifiers, etc.)
+- Parent-child relationships (methods within classes)
+- Line numbers for precise code location
+- Semantic tags (component, export, async, etc.)
 
 ## Configuration
 
@@ -223,12 +232,24 @@ accepting terms and/or authentication to download.
 After the first successful download, we cache the model under `~/.claude_code_search/models`
 and prefer offline loads for speed and reliability.
 
-### Supported languages
+### Supported Languages & Extensions
 
-- Python (`.py`)
-- JavaScript (`.js`), TypeScript (`.ts`)
-- JSX (`.jsx`), TSX (`.tsx`)
-- Svelte (`.svelte`)
+**Fully Supported (15 extensions across 9+ languages):**
+
+| Language | Extensions |
+|----------|------------|
+| **Python** | `.py` |
+| **JavaScript** | `.js`, `.jsx` |
+| **TypeScript** | `.ts`, `.tsx` |
+| **Java** | `.java` |
+| **Go** | `.go` |
+| **Rust** | `.rs` |
+| **C** | `.c` |
+| **C++** | `.cpp`, `.cc`, `.cxx`, `.c++` |
+| **C#** | `.cs` |
+| **Svelte** | `.svelte` |
+
+**Total**: **15 file extensions** across **9+ programming languages**
 
 ## Storage
 
