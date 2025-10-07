@@ -22,6 +22,8 @@
 
 ```
 
+[![Seeking Remote Work](https://img.shields.io/badge/🌍-Actively%20Seeking%20Remote%20Work-success?style=for-the-badge)](mailto:farhanalirazaazeemi@gmail.com)
+
 Claude Context without the cloud. Semantic code search that runs 100% locally using EmbeddingGemma. No API keys, no costs, your code never leaves your machine.
 
 - 🔍 **Find code by meaning, not strings**
@@ -168,10 +170,12 @@ graph TD
 The system uses advanced parsing to create semantically meaningful chunks across all supported languages:
 
 ### Chunking Strategies
+
 - **Python**: AST-based parsing for rich metadata extraction
 - **All other languages**: Tree-sitter parsing with language-specific node type recognition
 
 ### Chunk Types Extracted
+
 - **Functions/Methods**: Complete with signatures, docstrings, decorators
 - **Classes/Structs**: Full definitions with member functions as separate chunks
 - **Interfaces/Traits**: Type definitions and contracts
@@ -180,6 +184,7 @@ The system uses advanced parsing to create semantically meaningful chunks across
 - **Templates/Generics**: Parameterized type definitions
 
 ### Rich Metadata for All Languages
+
 - File path and folder structure
 - Function/class/type names and relationships
 - Language-specific features (async, generics, modifiers, etc.)
@@ -236,18 +241,18 @@ and prefer offline loads for speed and reliability.
 
 **Fully Supported (15 extensions across 9+ languages):**
 
-| Language | Extensions |
-|----------|------------|
-| **Python** | `.py` |
-| **JavaScript** | `.js`, `.jsx` |
-| **TypeScript** | `.ts`, `.tsx` |
-| **Java** | `.java` |
-| **Go** | `.go` |
-| **Rust** | `.rs` |
-| **C** | `.c` |
-| **C++** | `.cpp`, `.cc`, `.cxx`, `.c++` |
-| **C#** | `.cs` |
-| **Svelte** | `.svelte` |
+| Language       | Extensions                    |
+| -------------- | ----------------------------- |
+| **Python**     | `.py`                         |
+| **JavaScript** | `.js`, `.jsx`                 |
+| **TypeScript** | `.ts`, `.tsx`                 |
+| **Java**       | `.java`                       |
+| **Go**         | `.go`                         |
+| **Rust**       | `.rs`                         |
+| **C**          | `.c`                          |
+| **C++**        | `.cpp`, `.cc`, `.cxx`, `.c++` |
+| **C#**         | `.cs`                         |
+| **Svelte**     | `.svelte`                     |
 
 **Total**: **15 file extensions** across **9+ programming languages**
 
