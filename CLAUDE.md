@@ -203,3 +203,4 @@ The system now supports chunking and indexing multiple languages:
 - JSX/TSX (React components)
 - Go, Java, Rust (tree-sitter)
 - Svelte components
+- Markdown (section-based chunking by headers)

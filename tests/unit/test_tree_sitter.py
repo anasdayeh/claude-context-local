@@ -177,9 +177,12 @@ class TestTreeSitterChunker(TestCase):
         if 'python' in tsf.AVAILABLE_LANGUAGES:
             assert self.chunker.is_supported('test.py')
         
+        # Check if Markdown is supported (requires tree-sitter-markdown)
+        if 'markdown' in tsf.AVAILABLE_LANGUAGES:
+            assert self.chunker.is_supported('test.md')
+
         # These won't be supported without their packages
         assert not self.chunker.is_supported('test.txt')
-        assert not self.chunker.is_supported('test.md')
     
     def test_chunk_python_file(self):
         """Test chunking a Python file."""
