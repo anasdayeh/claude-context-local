@@ -16,7 +16,7 @@ class MultiLanguageChunker:
     # Supported extensions
     SUPPORTED_EXTENSIONS = {
         '.py',    # Python
-        '.js',    # JavaScript  
+        '.js',    # JavaScript
         '.jsx',   # JSX
         '.ts',    # TypeScript
         '.tsx',   # TSX
@@ -24,6 +24,7 @@ class MultiLanguageChunker:
         '.go',    # Go
         '.rs',    # Rust
         '.java',  # Java
+        '.md',    # Markdown
         '.c',     # C
         '.cpp',   # C++
         '.cc',    # C++
@@ -149,6 +150,9 @@ class MultiLanguageChunker:
                 'annotation_type_declaration': 'annotation',  # Java
                 'script_element': 'script',  # Svelte
                 'style_element': 'style',  # Svelte
+                'section': 'section',  # Markdown
+                'preamble': 'preamble',  # Markdown
+                'document': 'document',  # Markdown
             }
             
             chunk_type = chunk_type_map.get(tchunk.node_type, tchunk.node_type)
