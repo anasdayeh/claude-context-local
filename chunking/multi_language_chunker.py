@@ -2,36 +2,19 @@
 
 import logging
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional
 
-from .python_ast_chunker import CodeChunk
-from .tree_sitter import TreeSitterChunker, TreeSitterChunk
+from chunking.code_chunk import CodeChunk
+from chunking.tree_sitter import TreeSitterChunker, TreeSitterChunk
+from chunking.languages import LANGUAGE_MAP
 
 logger = logging.getLogger(__name__)
 
 
 class MultiLanguageChunker:
     """Unified chunker supporting multiple programming languages."""
-    
-    # Supported extensions
-    SUPPORTED_EXTENSIONS = {
-        '.py',    # Python
-        '.js',    # JavaScript
-        '.jsx',   # JSX
-        '.ts',    # TypeScript
-        '.tsx',   # TSX
-        '.svelte', # Svelte
-        '.go',    # Go
-        '.rs',    # Rust
-        '.java',  # Java
-        '.md',    # Markdown
-        '.c',     # C
-        '.cpp',   # C++
-        '.cc',    # C++
-        '.cxx',   # C++
-        '.c++',   # C++
-        '.cs'     # C#
-    }
+    # Supported extensions - derived from LANGUAGE_MAP
+    SUPPORTED_EXTENSIONS = set(LANGUAGE_MAP.keys())
     
     # Common large/build/tooling directories to skip during traversal
     DEFAULT_IGNORED_DIRS = {
@@ -82,10 +65,7 @@ class MultiLanguageChunker:
         if not self.is_supported(file_path):
             logger.debug(f"File type not supported: {file_path}")
             return []
-        
-        suffix = Path(file_path).suffix.lower()
 
-     
         # Use tree-sitter for all  languages 
         try:
             tree_chunks = self.tree_sitter_chunker.chunk_file(file_path)

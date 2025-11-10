@@ -8,19 +8,10 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import asdict
 import numpy as np
-
-try:
-    import faiss
-except ImportError:
-    faiss = None
-
-try:
-    from sqlitedict import SqliteDict
-except ImportError:
-    SqliteDict = None
-
+import faiss
+from sqlitedict import SqliteDict
 from embeddings.embedder import EmbeddingResult
-from chunking.python_ast_chunker import CodeChunk
+from chunking.code_chunk import CodeChunk
 
 
 class CodeIndexManager:
@@ -43,21 +34,6 @@ class CodeIndexManager:
         self._logger = logging.getLogger(__name__)
         self._on_gpu = False
         
-        # Check dependencies
-        self._check_dependencies()
-    
-    def _check_dependencies(self):
-        """Check if required dependencies are available."""
-        if faiss is None:
-            raise ImportError(
-                "faiss-cpu not found. Install with: pip install faiss-cpu"
-            )
-        
-        if SqliteDict is None:
-            raise ImportError(
-                "sqlitedict not found. Install with: pip install sqlitedict"
-            )
-    
     @property
     def index(self):
         """Lazy loading of FAISS index."""

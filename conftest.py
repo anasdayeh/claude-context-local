@@ -1,11 +1,19 @@
-"""Global pytest configuration and fixtures."""
+"""Global pytest configuration and fixtures.
+
+Note: Some tests may show DeprecationWarnings from tree-sitter's SWIG-generated C bindings
+(SwigPyPacked, SwigPyObject, swigvarlink have no __module__ attribute). These are from the
+tree-sitter-python package and cannot be fixed in our code. They appear in Python 3.11+
+due to how SWIG generates type information. See:
+https://github.com/tree-sitter/py-tree-sitter/issues/
+"""
 
 import pytest
 import sys
 import tempfile
 import shutil
 from pathlib import Path
-from typing import Generator, Dict, Any
+from typing import Generator, Dict
+import numpy as np
 
 # Add the package to Python path for testing
 project_root = Path(__file__).parent
@@ -28,37 +36,85 @@ try:
 except ImportError:
     SAMPLE_AUTH_MODULE = SAMPLE_DATABASE_MODULE = SAMPLE_API_MODULE = SAMPLE_UTILS_MODULE = None
 
+def pytest_collection_modifyitems(config, items):
+    """Automatically mark tests based on their location."""
+    for item in items:
+        # Mark tests based on file path and location
+        path_str = str(item.fspath)
+
+        # First, determine if it's unit or integration
+        if "tests/unit/" in path_str or "test_system.py" in path_str:
+            item.add_marker(pytest.mark.unit)
+        elif "tests/integration/" in path_str:
+            item.add_marker(pytest.mark.integration)
+
+        # Then add specific markers based on test file name
+        if "test_chunking" in path_str:
+            item.add_marker(pytest.mark.chunking)
+        elif "test_embeddings" in path_str:
+            item.add_marker(pytest.mark.embeddings)
+        elif "test_indexing" in path_str:
+            item.add_marker(pytest.mark.search)
+        elif "test_mcp_server" in path_str:
+            item.add_marker(pytest.mark.mcp)
+
+
+# Mock embedding model for testing
+class EmbeddingModelMock:
+    """Mock embedding model for testing."""
+
+    def __init__(self, cache_dir=None, device="cpu"):
+        """Initialize mock model."""
+        self.cache_dir = cache_dir
+        self.device = device
+        self.model_name = "google/embeddinggemma-300m"
+        self.rng = np.random.RandomState(42)  # Deterministic seed for reproducible tests
+
+    def encode(self, texts, **kwargs):
+        """Return mock embeddings."""
+        # Return 768-dimensional embeddings (matching EmbeddingGemma)
+        # Use deterministic seed for reproducible tests
+        return self.rng.randn(len(texts), 768).astype(np.float32)
+
+    def get_embedding_dimension(self):
+        """Return embedding dimension."""
+        return 768
+
+    def get_model_info(self):
+        """Return mock model info."""
+        return {
+            "model_name": self.model_name,
+            "embedding_dimension": 768,
+            "max_seq_length": 512,
+            "device": self.device,
+            "status": "loaded"
+        }
+
+    def cleanup(self):
+        """Cleanup mock resources."""
+        pass
+
+
+# Patch AVAILABLE_MODELS with mock for integration tests
 def pytest_configure(config):
-    """Configure pytest with custom markers."""
+    """Configure pytest with custom markers and mock embedding models."""
+    # Add filter to suppress SWIG deprecation warnings from tree-sitter
+    config.addinivalue_line("filterwarnings", "ignore::DeprecationWarning")
+
     config.addinivalue_line("markers", "unit: Unit tests")
-    config.addinivalue_line("markers", "integration: Integration tests") 
+    config.addinivalue_line("markers", "integration: Integration tests")
     config.addinivalue_line("markers", "slow: Slow running tests")
     config.addinivalue_line("markers", "mcp: MCP server related tests")
     config.addinivalue_line("markers", "embeddings: Embedding generation tests")
     config.addinivalue_line("markers", "chunking: Code chunking tests")
     config.addinivalue_line("markers", "search: Search functionality tests")
 
-def pytest_collection_modifyitems(config, items):
-    """Automatically mark tests based on their location."""
-    for item in items:
-        # Mark tests based on file path and location
-        path_str = str(item.fspath)
-        
-        # First, determine if it's unit or integration
-        if "tests/unit/" in path_str or "test_system.py" in path_str:
-            item.add_marker(pytest.mark.unit)
-        elif "tests/integration/" in path_str:
-            item.add_marker(pytest.mark.integration)
-        
-        # Then add specific markers based on test file name
-        if "test_chunking" in path_str:
-            item.add_marker(pytest.mark.chunking)
-        elif "test_embeddings" in path_str:
-            item.add_marker(pytest.mark.embeddings) 
-        elif "test_indexing" in path_str:
-            item.add_marker(pytest.mark.search)
-        elif "test_mcp_server" in path_str:
-            item.add_marker(pytest.mark.mcp)
+    # Patch AVAILABLE_MODELS with mock for integration tests
+    try:
+        from embeddings import embedding_models_register
+        embedding_models_register.AVAILIABLE_MODELS["google/embeddinggemma-300m"] = EmbeddingModelMock
+    except ImportError:
+        pass
 
 @pytest.fixture(autouse=True)
 def reset_global_state():
@@ -72,9 +128,9 @@ def reset_global_state():
         server_module._storage_dir = None
     except ImportError:
         pass  # Module might not be available in some tests
-    
+
     yield
-    
+
     # Cleanup after test if needed
     pass
 

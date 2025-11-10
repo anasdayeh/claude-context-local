@@ -11,7 +11,7 @@ from merkle.merkle_dag import MerkleDAG
 from merkle.snapshot_manager import SnapshotManager
 from chunking.multi_language_chunker import MultiLanguageChunker
 from embeddings.embedder import CodeEmbedder
-from .indexer import CodeIndexManager as Indexer
+from search.indexer import CodeIndexManager as Indexer
 
 logger = logging.getLogger(__name__)
 

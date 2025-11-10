@@ -10,7 +10,6 @@ from search.incremental_indexer import IncrementalIndexer
 from search.indexer import CodeIndexManager
 from embeddings.embedder import CodeEmbedder
 from chunking.multi_language_chunker import MultiLanguageChunker
-from merkle.snapshot_manager import SnapshotManager
 
 
 class TestMCPIndexing:

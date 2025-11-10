@@ -1,0 +1,44 @@
+tools:
+  search_code: |
+    Search code by natural language query using semantic similarity. Returns ranked results with file paths, line numbers, similarity scores, and code snippets. Use for understanding functionality, finding patterns, or discovering related code.
+    Minimal usage: search_code("authentication")
+    Full usage: search_code("authentication", k=10, file_pattern="*.py")
+
+  index_directory: |
+    Index a codebase using AST parsing and semantic embeddings. Supports Python, JavaScript, TypeScript, JSX, TSX, and Svelte. Uses Merkle trees for efficient incremental indexing.
+
+    Args:
+        directory_path: Absolute path to project root
+        project_name: Project name (optional, defaults to directory name)
+        file_patterns: File patterns to include (optional, all supported extensions)
+        incremental: Use incremental indexing (default: True)
+
+  find_similar_code: |
+    Find code chunks functionally similar to a reference chunk. Useful for finding alternative implementations, code duplication, or refactoring related code.
+
+    Args:
+        chunk_id: ID from search_code results (format: file:lines:type:name)
+        k: Number of similar chunks (default: 5)
+
+  get_index_status: Get current index statistics and model status.
+
+  list_projects: List all indexed projects with their metadata.
+
+  switch_project: |
+    Switch to a different indexed project for searching.
+
+    Args:
+        project_path: Path to the project directory
+
+  index_test_project: Index test project
+
+  clear_index: Clear the search index and metadata for the current project.
+
+help: |
+  # Code Search
+
+  1. Index a codebase: `index_directory("/path/to/project")`
+  2. Search: `search_code("description of code you want")`
+  3. Find similar: `find_similar_code(chunk_id)`
+
+  See tool descriptions for details and available options.

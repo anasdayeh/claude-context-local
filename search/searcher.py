@@ -5,7 +5,7 @@ import logging
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 
-from .indexer import CodeIndexManager
+from search.indexer import CodeIndexManager
 from embeddings.embedder import CodeEmbedder
 
 
