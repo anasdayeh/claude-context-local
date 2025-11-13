@@ -43,7 +43,3 @@ class CodeChunk:
         if self.file_path and not self.folder_structure:
             path_parts = Path(self.relative_path).parent.parts
             self.folder_structure = list(path_parts) if path_parts != ('.',) else []
-
-
-# python ast chunker removed
-   

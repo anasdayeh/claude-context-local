@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
-from .merkle_dag import MerkleDAG, MerkleNode
-from .snapshot_manager import SnapshotManager
+from merkle.merkle_dag import MerkleDAG, MerkleNode
+from merkle.snapshot_manager import SnapshotManager
 
 
 @dataclass

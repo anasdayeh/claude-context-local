@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from .merkle_dag import MerkleDAG
+from merkle.merkle_dag import MerkleDAG
 
 
 class SnapshotManager:

@@ -1,0 +1,35 @@
+tools:
+  search_code: |
+    Search code by natural language query using semantic similarity. Returns ranked results with file paths, line numbers, similarity scores, and code snippets. Use for understanding functionality, finding patterns, or discovering related code.
+    Minimal usage: search_code("authentication")
+    Full usage: search_code("authentication", k=10, file_pattern="*.py")
+
+  index_directory: |
+    Index a codebase using semantic embeddings.
+    Minimal usage: index_directory("/path/to/project")
+    Full usage: index_directory("/path/to/project", project_name="project", file_pattern="*.py", incremental=False)
+
+  find_similar_code: |
+    Find code chunks functionally similar to a reference chunk. Useful for finding alternative implementations, code duplication, or refactoring related code.
+    Usage: find_similar_code(chunk_id from search_code, k=5)
+
+  get_index_status: Get current index statistics and model status.
+
+  list_projects: List all indexed projects with their metadata.
+
+  switch_project: |
+    Switch to a different indexed project for searching.
+    Usage: switch_project("/path/to/project")
+
+  index_test_project: Index test project
+
+  clear_index: Clear the search index and metadata for the current project.
+
+help: |
+  # Find similar code
+
+  1. Index a codebase: `index_directory("/path/to/project")`
+  2. Search: `search_code("description of code you want")`
+  3. Find similar: `find_similar_code(chunk_id from search_code)`
+
+  See tool descriptions for details and available options.

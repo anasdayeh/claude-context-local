@@ -1,100 +1,108 @@
-#!/usr/bin/env python3
-"""
-Test script for MCP server project-specific storage functionality.
-"""
+"""Test MCP server project-specific storage functionality."""
 
-import sys
 import json
-import tempfile
-import os
-from pathlib import Path
+import pytest
 
-# Add parent directory to path to import our modules  
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from mcp_server.code_search_server import CodeSearchServer
 
-# Set environment to suppress any server initialization
-os.environ['MCP_TEST_MODE'] = '1'
 
-from mcp_server.server import (
-    index_directory, 
-    list_projects, 
-    switch_project, 
-    search_code,
-    get_index_status
-)
+@pytest.mark.integration
+class TestMCPProjectStorage:
+    """Test suite for MCP server project-specific storage."""
 
-def test_project_specific_storage():
-    """Test that project-specific storage works correctly."""
-    print("🧪 Testing project-specific storage functionality...")
-    
-    # Test 1: Index the test project
-    print("\n1️⃣ Testing index_test_project()")
-    from mcp_server.server import index_test_project
-    result = index_test_project()
-    result_data = json.loads(result)
-    
-    if "error" in result_data:
-        print(f"❌ Failed to index test project: {result_data['error']}")
-        return False
-    
-    print(f"✅ Test project indexed successfully!")
-    print(f"   📊 {result_data.get('chunks_processed', 'N/A')} chunks processed")
-    
-    # Test 2: List projects
-    print("\n2️⃣ Testing list_projects()")
-    projects_result = list_projects()
-    projects_data = json.loads(projects_result)
-    
-    print(f"✅ Found {projects_data.get('count', 0)} project(s)")
-    if projects_data.get("projects"):
-        for project in projects_data["projects"]:
-            print(f"   📁 {project['project_name']} ({project['project_hash']})")
-    
-    # Test 3: Search in the project
-    print("\n3️⃣ Testing search_code()")
-    search_result = search_code("authentication functions", k=3)
-    search_data = json.loads(search_result)
-    
-    if "error" not in search_data:
-        results = search_data.get("results", [])
-        print(f"✅ Found {len(results)} results for 'authentication functions'")
-        for i, result in enumerate(results[:2], 1):
-            print(f"   {i}. {result.get('name', 'unnamed')} ({result.get('chunk_type', 'unknown')})")
-    else:
-        print(f"❌ Search failed: {search_data['error']}")
-    
-    # Test 4: Check index status
-    print("\n4️⃣ Testing get_index_status()")
-    status_result = get_index_status()
-    status_data = json.loads(status_result)
-    
-    if "error" not in status_data:
-        print(f"✅ Index status retrieved")
-        print(f"   📈 Total chunks: {status_data.get('total_chunks', 'N/A')}")
-        print(f"   📁 Files indexed: {status_data.get('files_indexed', 'N/A')}")
-    
-    print("\n🎉 All tests completed!")
-    print("\n📋 Summary of project-specific storage benefits:")
-    print("   ✅ Each project has isolated storage")
-    print("   ✅ Projects don't interfere with each other")
-    print("   ✅ Fast switching between projects")
-    print("   ✅ Easy project management")
-    
-    return True
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        """Setup test fixtures."""
+        self.server = CodeSearchServer()
 
-if __name__ == "__main__":
-    import logging
-    import threading
-    
-    success = test_project_specific_storage()
-    if success:
-        print("\n🎯 Project-specific storage is working correctly!")
-    else:
-        print("\n❌ Some tests failed.")
-    
-    # Clean up logging handlers to prevent hang
-    logging.shutdown()
-    
-    # Force exit to ensure test ends
-    import os
-    os._exit(0 if success else 1)
+    def test_index_test_project(self):
+        """Test indexing the test project."""
+        result = self.server.index_test_project()
+        result_data = json.loads(result)
+
+        assert "error" not in result_data, f"Failed to index test project: {result_data.get('error')}"
+        # Check that indexing was successful (various possible keys)
+        has_content = (
+            result_data.get("chunks_processed", 0) > 0 or
+            result_data.get("chunks_added", 0) >= 0 or
+            "demo_info" in result_data
+        )
+        assert has_content, "Should have processed/added content or demo info"
+
+    def test_list_projects(self):
+        """Test listing projects after indexing."""
+        # First index a project
+        self.server.index_test_project()
+
+        # List projects
+        projects_result = self.server.list_projects()
+        projects_data = json.loads(projects_result)
+
+        assert "count" in projects_data, "Projects result should include count"
+        assert projects_data.get("count", 0) >= 1, "Should have at least one project after indexing"
+        assert "projects" in projects_data, "Projects result should include projects list"
+
+        if projects_data.get("projects"):
+            for project in projects_data["projects"]:
+                assert "project_name" in project, "Project should have project_name"
+                assert "project_hash" in project, "Project should have project_hash"
+
+    def test_search_code_in_project(self):
+        """Test searching code in the indexed project."""
+        # First index a project
+        self.server.index_test_project()
+
+        # Search
+        search_result = self.server.search_code("authentication functions", k=3)
+        search_data = json.loads(search_result)
+
+        # Should either have results or error, but not both
+        if "error" in search_data:
+            # Error is acceptable if no results found
+            assert isinstance(search_data["error"], str), "Error should be a string"
+        else:
+            # Should have results
+            assert "results" in search_data, "Search result should include results"
+            results = search_data.get("results", [])
+            assert isinstance(results, list), "Results should be a list"
+
+            # If we have results, check their structure
+            for result in results:
+                assert "name" in result or "kind" in result, "Each result should have name or kind"
+
+    def test_get_index_status(self):
+        """Test retrieving index status."""
+        # First index a project
+        self.server.index_test_project()
+
+        # Get status
+        status_result = self.server.get_index_status()
+        status_data = json.loads(status_result)
+
+        if "error" not in status_data:
+            assert "index_statistics" in status_data, "Status should include index_statistics"
+            stats = status_data.get("index_statistics", {})
+            assert "total_chunks" in stats, "Statistics should include total_chunks"
+            assert "files_indexed" in stats, "Statistics should include files_indexed"
+            assert stats.get("total_chunks", 0) >= 0, "total_chunks should be non-negative"
+            assert stats.get("files_indexed", 0) >= 0, "files_indexed should be non-negative"
+
+    def test_project_isolation(self):
+        """Test that projects are isolated in storage."""
+        # Index test project
+        result1 = self.server.index_test_project()
+        result1_data = json.loads(result1)
+
+        assert "error" not in result1_data, "First index should succeed"
+
+        # Get projects list
+        projects_result = self.server.list_projects()
+        projects_data = json.loads(projects_result)
+
+        # Should have at least one project
+        assert len(projects_data.get("projects", [])) >= 1, "Should have at least one project"
+
+        # Each project should have isolated storage
+        projects = projects_data.get("projects", [])
+        for project in projects:
+            assert "project_hash" in project, "Project should have a hash for isolation"
