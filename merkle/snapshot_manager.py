@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -23,6 +24,7 @@ class SnapshotManager:
             storage_dir = Path.home() / '.claude_code_search' / 'merkle'
         self.storage_dir = Path(storage_dir)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
+        self._logger = logging.getLogger(__name__)
         
     def get_project_id(self, project_path: str) -> str:
         """Generate a unique ID for a project based on its path.
@@ -114,12 +116,14 @@ class SnapshotManager:
                 
             # Check version compatibility
             if snapshot_data.get('version') != '1.0':
-                print(f"Warning: Snapshot version mismatch: {snapshot_data.get('version')}")
+                self._logger.warning(
+                    "Snapshot version mismatch: %s", snapshot_data.get('version')
+                )
                 
             return MerkleDAG.from_dict(snapshot_data['dag'])
             
         except (json.JSONDecodeError, KeyError, Exception) as e:
-            print(f"Error loading snapshot: {e}")
+            self._logger.warning("Error loading snapshot: %s", e)
             return None
     
     def load_metadata(self, project_path: str) -> Optional[Dict]:
@@ -140,7 +144,7 @@ class SnapshotManager:
             with open(metadata_path, 'r') as f:
                 return json.load(f)
         except (json.JSONDecodeError, Exception) as e:
-            print(f"Error loading metadata: {e}")
+            self._logger.warning("Error loading metadata: %s", e)
             return None
     
     def has_snapshot(self, project_path: str) -> bool:

@@ -120,7 +120,7 @@ class TestFullSearchFlow:
         index_manager.create_index(768, "flat")
         index_manager.add_embeddings(embeddings)
         
-        assert len(index_manager._chunk_ids) == len(embeddings)
+        assert index_manager.get_index_size() == len(embeddings)
         
         # Step 4: Test various searches
         query_embedding = np.random.random(768).astype(np.float32)
@@ -385,7 +385,7 @@ class TestFullSearchFlow:
         index_manager.create_index(768, "flat")
         index_manager.add_embeddings(initial_embeddings)
         
-        initial_count = len(index_manager._chunk_ids)
+        initial_count = index_manager.get_index_size()
         
         # Save the initial index
         index_manager.save_index()
@@ -441,7 +441,7 @@ class TestFullSearchFlow:
             index_manager.add_embeddings(new_embeddings)
             
             # Should have more chunks now
-            assert len(index_manager._chunk_ids) > initial_count
+            assert index_manager.get_index_size() > initial_count
     
     @pytest.mark.skip(reason="ProjectManager not yet implemented")
     def test_project_manager_operations(self, test_project_path, mock_storage_dir):

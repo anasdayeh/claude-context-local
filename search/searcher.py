@@ -173,17 +173,12 @@ class IntelligentSearcher:
         context_info = {}
         
         if context_depth > 0:
-            # Add related chunks context
-            similar_chunks = self.index_manager.get_similar_chunks(chunk_id, k=3)
-            context_info['similar_chunks'] = [
-                {
-                    'chunk_id': cid,
-                    'similarity': sim,
-                    'name': meta.get('name'),
-                    'chunk_type': meta.get('chunk_type')
-                }
-                for cid, sim, meta in similar_chunks[:2]  # Top 2 similar
-            ]
+            # Add same-file neighbors as context (avoid FAISS reconstruct to prevent crashes)
+            context_info['file_neighbors'] = self._get_file_neighbors(
+                chunk_id=chunk_id,
+                relative_path=relative_path,
+                window=1,
+            )
             
             # Add file context
             context_info['file_context'] = {
@@ -207,15 +202,71 @@ class IntelligentSearcher:
             tags=metadata.get('tags', []),
             context_info=context_info
         )
+
+    def _iter_all_chunks(self):
+        """Yield (chunk_id, metadata) pairs from the index metadata store."""
+        for key, entry in self.index_manager.metadata_db.items():
+            meta = entry.get('metadata') if isinstance(entry, dict) else None
+            if not isinstance(meta, dict):
+                continue
+
+            cid = entry.get('chunk_id')
+            if not cid:
+                # Legacy format uses the key as chunk_id
+                cid = str(key)
+            yield cid, meta
+
+    def _get_file_neighbors(self, chunk_id: str, relative_path: str, window: int = 1) -> List[Dict[str, Any]]:
+        """Return adjacent chunks in the same file as lightweight context."""
+        if not relative_path:
+            return []
+
+        candidates: List[Tuple[str, Dict[str, Any]]] = []
+        for cid, meta in self._iter_all_chunks():
+            if meta.get("relative_path") != relative_path:
+                continue
+            candidates.append((cid, meta))
+
+        if not candidates:
+            return []
+
+        candidates.sort(key=lambda item: (item[1].get("start_line", 0), item[1].get("end_line", 0)))
+        try:
+            idx = next(i for i, (cid, _) in enumerate(candidates) if cid == chunk_id)
+        except StopIteration:
+            return []
+
+        neighbors: List[Dict[str, Any]] = []
+        start = max(0, idx - window)
+        end = min(len(candidates), idx + window + 1)
+        for i in range(start, end):
+            if i == idx:
+                continue
+            cid, meta = candidates[i]
+            preview = meta.get("content_preview") or ""
+            if not preview:
+                content = meta.get("content") or ""
+                preview = (content[:200] + "...") if len(content) > 200 else content
+            neighbors.append(
+                {
+                    "chunk_id": cid,
+                    "lines": f"{meta.get('start_line', 0)}-{meta.get('end_line', 0)}",
+                    "chunk_type": meta.get("chunk_type", "unknown"),
+                    "name": meta.get("name"),
+                    "preview": preview,
+                }
+            )
+        return neighbors
     
     def _count_chunks_in_file(self, relative_path: str) -> int:
         """Count total chunks in a specific file."""
+        if not relative_path:
+            return 0
         count = 0
-        stats = self.index_manager.get_stats()
-        
-        # This is a simplified implementation
-        # In a real scenario, you might want to maintain this as a separate index
-        return stats.get('files_indexed', 0)
+        for _, meta in self._iter_all_chunks():
+            if meta.get("relative_path") == relative_path:
+                count += 1
+        return count
     
     def _rank_results(
         self, 
@@ -406,13 +457,26 @@ class IntelligentSearcher:
         k: int = 5
     ) -> List[SearchResult]:
         """Find chunks similar to a given chunk."""
-        similar_chunks = self.index_manager.get_similar_chunks(chunk_id, k)
-        
-        results = []
-        for chunk_id, similarity, metadata in similar_chunks:
-            result = self._create_search_result(chunk_id, similarity, metadata, context_depth=1)
-            results.append(result)
-        
+        metadata = self.index_manager.get_chunk_by_id(chunk_id)
+        if not metadata:
+            return []
+
+        content = metadata.get("content") or metadata.get("content_preview") or ""
+        if not content:
+            return []
+
+        # Embed the chunk text and search by vector (avoid FAISS reconstruct by ID).
+        embedding = self.embedder.embed_document(content)
+        raw_results = self.index_manager.search(embedding, k=min(max(k * 3, k + 1), 200))
+
+        results: List[SearchResult] = []
+        for cid, similarity, meta in raw_results:
+            if cid == chunk_id:
+                continue
+            results.append(self._create_search_result(cid, similarity, meta, context_depth=1))
+            if len(results) >= k:
+                break
+
         return results
     
     def get_search_suggestions(self, partial_query: str) -> List[str]:

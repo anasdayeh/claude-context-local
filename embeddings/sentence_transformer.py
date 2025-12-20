@@ -19,7 +19,10 @@ class SentenceTransformerModel(EmbeddingModel):
         self,
         model_name: str,
         cache_dir: Optional[str] = None,
-        device: str = "auto"
+        device: str = "auto",
+        trust_remote_code: bool = False,
+        backend: Optional[str] = None,
+        model_kwargs: Optional[Dict[str, Any]] = None
     ):
         """Initialize SentenceTransformerModel.
 
@@ -31,7 +34,11 @@ class SentenceTransformerModel(EmbeddingModel):
         super().__init__(device=device)
         self.model_name = model_name
         self.cache_dir = cache_dir
+        self.trust_remote_code = trust_remote_code
+        self.backend = (backend or os.environ.get("ST_BACKEND", "torch")).lower()
+        self.model_kwargs = model_kwargs or {}
         self._model_loaded = False
+        self._fallback_attempted = False
         self._logger = logging.getLogger(__name__)
 
     @cached_property
@@ -54,17 +61,125 @@ class SentenceTransformerModel(EmbeddingModel):
 
         try:
             model_source = str(local_model_dir) if local_model_dir else self.model_name
-            model = SentenceTransformer(
-                model_source,
-                cache_folder=self.cache_dir,
-                device=self._device
-            )
+            model = self._load_model(model_source)
             self._logger.info(f"Model loaded successfully on device: {model.device}")
             self._model_loaded = True
-            return model
+            return self._maybe_quantize_onnx(model)
         except Exception as e:
             self._logger.error(f"Failed to load model: {e}")
             raise
+
+    def _load_model(self, model_source: str) -> SentenceTransformer:
+        """Load model with backend-specific options."""
+        backend = self.backend
+        model_kwargs = dict(self.model_kwargs)
+
+        if backend == "onnx":
+            provider = os.environ.get("ST_ONNX_PROVIDER")
+            file_name = os.environ.get("ST_ONNX_FILE_NAME")
+            export_flag = os.environ.get("ST_ONNX_EXPORT")
+            if provider:
+                model_kwargs["provider"] = provider
+            if file_name:
+                model_kwargs["file_name"] = file_name
+            if export_flag is not None:
+                model_kwargs["export"] = export_flag.lower() in {"1", "true", "yes"}
+
+        try:
+            return SentenceTransformer(
+                model_source,
+                cache_folder=self.cache_dir,
+                device=self._device,
+                trust_remote_code=self.trust_remote_code,
+                backend=backend,
+                model_kwargs=model_kwargs if model_kwargs else None,
+            )
+        except Exception as e:
+            if backend == "onnx":
+                self._logger.warning(
+                    f"Failed to load ONNX backend, falling back to PyTorch: {e}"
+                )
+                return SentenceTransformer(
+                    model_source,
+                    cache_folder=self.cache_dir,
+                    device=self._device,
+                    trust_remote_code=self.trust_remote_code,
+                )
+            raise
+
+    def _maybe_quantize_onnx(self, model: SentenceTransformer) -> SentenceTransformer:
+        """Optionally export and load a quantized ONNX model."""
+        if self.backend != "onnx":
+            return model
+
+        quantize_flag = os.environ.get("ST_ONNX_QUANTIZE", "").lower() in {"1", "true", "yes"}
+        if not quantize_flag:
+            return model
+
+        try:
+            from sentence_transformers.backend import export_dynamic_quantized_onnx_model
+        except Exception as e:
+            self._logger.warning(f"ONNX quantization not available: {e}")
+            return model
+
+        quant_config = os.environ.get("ST_ONNX_QUANT_CONFIG", "arm64")
+        file_suffix = os.environ.get("ST_ONNX_QUANT_SUFFIX")
+
+        cache_root = Path(self.cache_dir) if self.cache_dir else Path.cwd()
+        model_key = self.model_name.replace("/", "__")
+        quant_dir = cache_root / "onnx_quantized" / model_key
+        quant_dir.mkdir(parents=True, exist_ok=True)
+
+        onnx_file = self._find_onnx_file(quant_dir, file_suffix)
+        if onnx_file is None:
+            try:
+                export_dynamic_quantized_onnx_model(
+                    model,
+                    quantization_config=quant_config,
+                    model_name_or_path=str(quant_dir),
+                    file_suffix=file_suffix,
+                )
+            except Exception as e:
+                self._logger.warning(f"Failed to export quantized ONNX model: {e}")
+                return model
+            onnx_file = self._find_onnx_file(quant_dir, file_suffix)
+
+        if onnx_file is None:
+            self._logger.warning("Quantized ONNX export did not produce a model file")
+            return model
+
+        model_kwargs = {
+            "file_name": onnx_file,
+            "export": False,
+        }
+
+        return SentenceTransformer(
+            str(quant_dir),
+            cache_folder=self.cache_dir,
+            device=self._device,
+            trust_remote_code=self.trust_remote_code,
+            backend="onnx",
+            model_kwargs=model_kwargs,
+        )
+
+    def _find_onnx_file(self, quant_dir: Path, file_suffix: Optional[str]) -> Optional[str]:
+        """Find an ONNX file in a directory, preferring a known suffix."""
+        candidates = []
+        onnx_root = quant_dir / "onnx"
+        search_dirs = [onnx_root, quant_dir] if onnx_root.exists() else [quant_dir]
+        for search_dir in search_dirs:
+            candidates.extend(sorted(search_dir.glob("*.onnx")))
+
+        if not candidates:
+            return None
+
+        if file_suffix:
+            for candidate in candidates:
+                if file_suffix in candidate.stem:
+                    return str(candidate.relative_to(quant_dir))
+
+        # Default to the first ONNX file
+        return str(candidates[0].relative_to(quant_dir))
 
     def encode(self, texts: list[str], **kwargs) -> np.ndarray:
         """Encode texts using SentenceTransformer.
@@ -76,7 +191,33 @@ class SentenceTransformerModel(EmbeddingModel):
         Returns:
             Array of embeddings
         """
-        return self.model.encode(texts, **kwargs)
+        try:
+            return self.model.encode(texts, **kwargs)
+        except Exception as e:
+            if self._fallback_attempted:
+                raise
+
+            fallback_reason = str(e)
+            self._logger.warning(f"Encode failed ({fallback_reason}). Attempting fallback.")
+
+            # First fallback: ONNX -> torch
+            if self.backend == "onnx":
+                self.backend = "torch"
+                self._fallback_attempted = True
+                self._reset_model()
+                try:
+                    return self.model.encode(texts, **kwargs)
+                except Exception:
+                    pass
+
+            # Second fallback: MPS -> CPU
+            if self._device == "mps":
+                self._device = "cpu"
+                self._fallback_attempted = True
+                self._reset_model()
+                return self.model.encode(texts, **kwargs)
+
+            raise
 
     def get_embedding_dimension(self) -> int:
         """Get embedding dimension."""
@@ -111,6 +252,11 @@ class SentenceTransformerModel(EmbeddingModel):
             self._logger.info("Model cleaned up and memory freed")
         except Exception as e:
             self._logger.warning(f"Error during model cleanup: {e}")
+
+    def _reset_model(self) -> None:
+        """Clear cached model so it can be reloaded with new settings."""
+        self.__dict__.pop("model", None)
+        self._model_loaded = False
 
     def _is_model_cached(self) -> bool:
         """Check if model is cached locally."""
