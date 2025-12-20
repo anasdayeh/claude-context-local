@@ -11,6 +11,14 @@ from chunking.languages.go_chunker import GoChunker
 from chunking.languages.rust_chunker import RustChunker
 from chunking.languages.java_chunker import JavaChunker
 from chunking.languages.markdown_chunker import MarkdownChunker
+from chunking.languages.html_chunker import HtmlChunker
+from chunking.languages.css_chunker import CssChunker
+from chunking.languages.json_chunker import JsonChunker
+from chunking.languages.astro_chunker import AstroChunker
+from chunking.languages.yaml_chunker import YamlChunker
+from chunking.languages.toml_chunker import TomlChunker
+from chunking.languages.xml_chunker import XmlChunker
+from chunking.languages.graphql_chunker import GraphqlChunker
 from chunking.languages.c_chunker import CChunker
 from chunking.languages.cpp_chunker import CppChunker
 from chunking.languages.csharp_chunker import CSharpChunker
@@ -33,10 +41,32 @@ LANGUAGE_MAP = {
     '.rs': ('rust', RustChunker),
     '.java': ('java', JavaChunker),
     '.md': ('markdown', MarkdownChunker),
+    '.html': ('html', HtmlChunker),
+    '.htm': ('html', HtmlChunker),
+    '.astro': ('astro', AstroChunker),
+    '.css': ('css', CssChunker),
+    '.json': ('json', JsonChunker),
+    '.jsonl': ('json', JsonChunker),
+    '.yaml': ('yaml', YamlChunker),
+    '.yml': ('yaml', YamlChunker),
+    '.toml': ('toml', TomlChunker),
+    '.xml': ('xml', XmlChunker),
+    '.xsd': ('xml', XmlChunker),
+    '.xsl': ('xml', XmlChunker),
+    '.xslt': ('xml', XmlChunker),
+    '.svg': ('xml', XmlChunker),
+    '.xhtml': ('xml', XmlChunker),
+    '.graphql': ('graphql', GraphqlChunker),
+    '.gql': ('graphql', GraphqlChunker),
+    '.graphqls': ('graphql', GraphqlChunker),
     '.c': ('c', CChunker),
     '.cpp': ('cpp', _get_cpp_chunker),
     '.cc': ('cpp', _get_cpp_chunker),
     '.cxx': ('cpp', _get_cpp_chunker),
     '.c++': ('cpp', _get_cpp_chunker),
     '.cs': ('csharp', CSharpChunker),
+    '.mjs': ('javascript', JavaScriptChunker),
+    '.cjs': ('javascript', JavaScriptChunker),
+    '.mts': ('typescript', lambda: TypeScriptChunker(use_tsx=False)),
+    '.cts': ('typescript', lambda: TypeScriptChunker(use_tsx=False)),
 }

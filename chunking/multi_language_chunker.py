@@ -6,6 +6,7 @@ from typing import List, Optional
 
 from chunking.code_chunk import CodeChunk
 from chunking.tree_sitter import TreeSitterChunker, TreeSitterChunk
+from chunking.text_chunker import TextChunker
 from chunking.languages import LANGUAGE_MAP
 
 logger = logging.getLogger(__name__)
@@ -14,7 +15,14 @@ logger = logging.getLogger(__name__)
 class MultiLanguageChunker:
     """Unified chunker supporting multiple programming languages."""
     # Supported extensions - derived from LANGUAGE_MAP
-    SUPPORTED_EXTENSIONS = set(LANGUAGE_MAP.keys())
+    TEXT_FALLBACK_EXTENSIONS = {
+        '.astro', '.html', '.htm', '.css', '.json', '.jsonl',
+        '.yaml', '.yml', '.toml', '.ini', '.env',
+        '.txt', '.csv', '.tsv', '.xml', '.svg',
+        '.graphql', '.gql', '.sql'
+    }
+
+    SUPPORTED_EXTENSIONS = set(LANGUAGE_MAP.keys()) | TEXT_FALLBACK_EXTENSIONS
     
     # Common large/build/tooling directories to skip during traversal
     DEFAULT_IGNORED_DIRS = {
@@ -40,6 +48,7 @@ class MultiLanguageChunker:
         # Use AST chunker for Python (more mature implementation)
         # Use tree-sitter for other languages
         self.tree_sitter_chunker = TreeSitterChunker()
+        self.text_chunker = TextChunker(root_path=root_path)
     
     def is_supported(self, file_path: str) -> bool:
         """Check if file type is supported.
@@ -66,11 +75,20 @@ class MultiLanguageChunker:
             logger.debug(f"File type not supported: {file_path}")
             return []
 
+        suffix = Path(file_path).suffix.lower()
+
         # Use tree-sitter for all  languages 
         try:
             tree_chunks = self.tree_sitter_chunker.chunk_file(file_path)
-            # Convert TreeSitterChunk to CodeChunk
-            return self._convert_tree_chunks(tree_chunks, file_path)
+            if tree_chunks:
+                # Convert TreeSitterChunk to CodeChunk
+                return self._convert_tree_chunks(tree_chunks, file_path)
+
+            # Fallback for text-like files when tree-sitter isn't available
+            if suffix in self.TEXT_FALLBACK_EXTENSIONS:
+                return self.text_chunker.chunk_file(file_path)
+
+            return []
         except Exception as e:
             logger.error(f"Failed to chunk file {file_path}: {e}")
             return []

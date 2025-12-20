@@ -45,6 +45,7 @@ class IncrementalIndexResult:
 
 class IncrementalIndexer:
     """Handles incremental indexing of code changes."""
+    DEFAULT_BATCH_SIZE = 256
     
     def __init__(
         self,
@@ -195,34 +196,16 @@ class IncrementalIndexer:
             # Filter supported files
             supported_files = [f for f in all_files if self.chunker.is_supported(f)]
             
-            # Collect all chunks first, then embed in a single pass for efficiency
-            all_chunks = []
-            for file_path in supported_files:
-                full_path = Path(project_path) / file_path
-                try:
-                    chunks = self.chunker.chunk_file(str(full_path))
-                    if chunks:
-                        all_chunks.extend(chunks)
-                except Exception as e:
-                    logger.warning(f"Failed to chunk {file_path}: {e}")
+            chunks_added = 0
+            batch: List = []
+            for chunk in self._iter_chunks(supported_files, project_path):
+                batch.append(chunk)
+                if len(batch) >= self.DEFAULT_BATCH_SIZE:
+                    chunks_added += self._process_batch(batch, project_name)
+                    batch = []
 
-            # Embed all chunks in one batched call
-            all_embedding_results = []
-            if all_chunks:
-                try:
-                    all_embedding_results = self.embedder.embed_chunks(all_chunks)
-                    # Update metadata
-                    for chunk, embedding_result in zip(all_chunks, all_embedding_results):
-                        embedding_result.metadata['project_name'] = project_name
-                        embedding_result.metadata['content'] = chunk.content
-                except Exception as e:
-                    logger.warning(f"Embedding failed: {e}")
-            
-            # Add all embeddings to index at once
-            if all_embedding_results:
-                self.indexer.add_embeddings(all_embedding_results)
-            
-            chunks_added = len(all_embedding_results)
+            if batch:
+                chunks_added += self._process_batch(batch, project_name)
             
             # Save snapshot
             self.snapshot_manager.save_snapshot(dag, {
@@ -301,33 +284,44 @@ class IncrementalIndexer:
         # Filter supported files
         supported_files = [f for f in files_to_index if self.chunker.is_supported(f)]
         
-        # Collect all chunks first, then embed in a single pass
-        chunks_to_embed = []
-        for file_path in supported_files:
+        chunks_added = 0
+        batch: List = []
+        for chunk in self._iter_chunks(supported_files, project_path):
+            batch.append(chunk)
+            if len(batch) >= self.DEFAULT_BATCH_SIZE:
+                chunks_added += self._process_batch(batch, project_name)
+                batch = []
+
+        if batch:
+            chunks_added += self._process_batch(batch, project_name)
+
+        return chunks_added
+
+    def _iter_chunks(self, file_paths: List[str], project_path: str):
+        """Yield chunks for supported files."""
+        for file_path in file_paths:
             full_path = Path(project_path) / file_path
             try:
                 chunks = self.chunker.chunk_file(str(full_path))
-                if chunks:
-                    chunks_to_embed.extend(chunks)
+                for chunk in chunks:
+                    yield chunk
             except Exception as e:
                 logger.warning(f"Failed to chunk {file_path}: {e}")
 
-        all_embedding_results = []
-        if chunks_to_embed:
-            try:
-                all_embedding_results = self.embedder.embed_chunks(chunks_to_embed)
-                # Update metadata
-                for chunk, embedding_result in zip(chunks_to_embed, all_embedding_results):
-                    embedding_result.metadata['project_name'] = project_name
-                    embedding_result.metadata['content'] = chunk.content
-            except Exception as e:
-                logger.warning(f"Embedding failed: {e}")
-        
-        # Add all embeddings to index at once
-        if all_embedding_results:
-            self.indexer.add_embeddings(all_embedding_results)
-        
-        return len(all_embedding_results)
+    def _process_batch(self, chunks: List, project_name: str) -> int:
+        """Embed and index a batch of chunks."""
+        try:
+            embedding_results = self.embedder.embed_chunks(chunks)
+            for chunk, embedding_result in zip(chunks, embedding_results):
+                embedding_result.metadata['project_name'] = project_name
+                embedding_result.metadata['content'] = chunk.content
+
+            if embedding_results:
+                self.indexer.add_embeddings(embedding_results)
+            return len(embedding_results)
+        except Exception as e:
+            logger.warning(f"Embedding failed: {e}")
+            return 0
     
     
     def get_indexing_stats(self, project_path: str) -> Optional[Dict]:

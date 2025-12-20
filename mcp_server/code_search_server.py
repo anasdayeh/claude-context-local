@@ -69,7 +69,7 @@ class CodeSearchServer:
                 return True
 
             project_path_obj = Path(project_path)
-            if project_path_obj == Path.cwd() and list(project_path_obj.glob("**/*.py")):
+            if project_path_obj == Path.cwd() and self._has_supported_files(project_path_obj):
                 logger.info(f"Auto-indexing current directory: {project_path}")
                 result = self.index_directory(project_path)
                 result_data = json.loads(result)
@@ -79,6 +79,21 @@ class CodeSearchServer:
         except Exception as e:
             logger.warning(f"Failed to check/auto-index project {project_path}: {e}")
             return False
+
+    def _has_supported_files(self, project_path: Path) -> bool:
+        """Quick check for any supported files in the project."""
+        try:
+            ignored_dirs = MultiLanguageChunker.DEFAULT_IGNORED_DIRS
+            supported_exts = MultiLanguageChunker.SUPPORTED_EXTENSIONS
+
+            for root, dirs, files in os.walk(project_path):
+                dirs[:] = [d for d in dirs if d not in ignored_dirs]
+                for filename in files:
+                    if Path(filename).suffix.lower() in supported_exts:
+                        return True
+        except Exception:
+            return False
+        return False
 
     @lru_cache(maxsize=1)
     def embedder(self) -> CodeEmbedder:
@@ -205,7 +220,8 @@ class CodeSearchServer:
 
             logger.info(f"Search filters: {filters}")
 
-            context_depth = 1 if include_context else 0
+            env_include_context = os.getenv("CODE_SEARCH_INCLUDE_CONTEXT", "").lower() in {"1", "true", "yes"}
+            context_depth = 1 if include_context and env_include_context else 0
             logger.info(f"Calling searcher.search with query='{query}', k={k}, mode={search_mode}")
             results = searcher.search(
                 query=query,
@@ -277,6 +293,20 @@ class CodeSearchServer:
             logger.info(f"Indexing directory: {directory_path} (incremental={incremental})")
 
             index_manager = self.get_index_manager(str(directory_path))
+            try:
+                import faiss  # local import to avoid module cost if unused
+                if index_manager.index is not None and not isinstance(index_manager.index, faiss.IndexIDMap2):
+                    if incremental:
+                        logger.warning("Legacy index detected; forcing full reindex to migrate IDs.")
+                        incremental = False
+            except Exception:
+                pass
+            try:
+                if incremental and index_manager.get_index_size() == 0:
+                    logger.warning("Index is empty; forcing full reindex.")
+                    incremental = False
+            except Exception:
+                pass
             embedder = self.embedder()
             chunker = MultiLanguageChunker(str(directory_path))
 
@@ -393,6 +423,15 @@ class CodeSearchServer:
                             with open(stats_file) as f:
                                 stats = json.load(f)
                             project_info["index_stats"] = stats
+                        else:
+                            # Attempt to compute stats if missing
+                            index_dir = project_dir / "index"
+                            if index_dir.exists():
+                                try:
+                                    temp_manager = CodeIndexManager(str(index_dir))
+                                    project_info["index_stats"] = temp_manager.get_stats()
+                                except Exception:
+                                    pass
 
                         projects.append(project_info)
 

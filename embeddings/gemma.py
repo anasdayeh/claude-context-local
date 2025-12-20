@@ -21,5 +21,6 @@ class GemmaEmbeddingModel(SentenceTransformerModel):
         super().__init__(
             model_name="google/embeddinggemma-300m",
             cache_dir=cache_dir,
-            device=device
+            device=device,
+            trust_remote_code=True
         )

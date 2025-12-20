@@ -1,6 +1,7 @@
 """Code embedding wrapper using EmbeddingGemma model."""
 
 import logging
+import os
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 import numpy as np
@@ -34,9 +35,16 @@ class CodeEmbedder:
             cache_dir: Directory to cache the model
             device: Device to load model on
         """
+        if device == "auto":
+            env_device = os.getenv("CODE_SEARCH_DEVICE")
+            if env_device:
+                device = env_device
+
         if not cache_dir: # if not provided, use default
             cache_dir = str(get_storage_dir() / "models")
         self.device = device
+        self._document_prompt_name: Optional[str] = None
+        self._query_prompt_name: Optional[str] = None
 
         # Get model class from available models
         model_class = AVAILIABLE_MODELS[model_name]
@@ -49,6 +57,66 @@ class CodeEmbedder:
     def model(self):
         """Get the underlying embedding model."""
         return self._model.model
+
+    def _resolve_prompt_name(self, candidates: List[str]) -> Optional[str]:
+        """Pick the first available prompt name from the model registry."""
+        prompts = getattr(self.model, "prompts", None)
+        if not isinstance(prompts, dict):
+            return None
+        for name in candidates:
+            if name in prompts:
+                return name
+        return None
+
+    def _get_document_prompt_name(self) -> Optional[str]:
+        if self._document_prompt_name is None:
+            self._document_prompt_name = self._resolve_prompt_name(
+                ["Retrieval-document", "document", "text"]
+            )
+            if not self._document_prompt_name:
+                self._logger.warning(
+                    "No document prompt found in model registry; embedding without a prompt."
+                )
+        return self._document_prompt_name
+
+    def _get_query_prompt_name(self) -> Optional[str]:
+        if self._query_prompt_name is None:
+            self._query_prompt_name = self._resolve_prompt_name(
+                ["InstructionRetrieval", "query"]
+            )
+            if not self._query_prompt_name:
+                self._logger.warning(
+                    "No query prompt found in model registry; embedding without a prompt."
+                )
+        return self._query_prompt_name
+
+    def _encode_documents(self, texts: List[str]) -> np.ndarray:
+        """Encode documents with the best available prompt."""
+        prompt_name = self._get_document_prompt_name()
+        encode_kwargs = {"show_progress_bar": False}
+        if prompt_name:
+            encode_kwargs["prompt_name"] = prompt_name
+
+        model = self.model
+        if hasattr(model, "encode_document"):
+            embeddings = model.encode_document(texts, **encode_kwargs)
+        else:
+            embeddings = model.encode(texts, **encode_kwargs)
+        return np.asarray(embeddings, dtype=np.float32)
+
+    def _encode_queries(self, texts: List[str]) -> np.ndarray:
+        """Encode queries with the best available prompt."""
+        prompt_name = self._get_query_prompt_name()
+        encode_kwargs = {"show_progress_bar": False}
+        if prompt_name:
+            encode_kwargs["prompt_name"] = prompt_name
+
+        model = self.model
+        if hasattr(model, "encode_query"):
+            embeddings = model.encode_query(texts, **encode_kwargs)
+        else:
+            embeddings = model.encode(texts, **encode_kwargs)
+        return np.asarray(embeddings, dtype=np.float32)
 
     def create_embedding_content(self, chunk: CodeChunk, max_chars: int = 6000) -> str:
         """Create clean content for embedding generation.
@@ -117,12 +185,7 @@ class CodeEmbedder:
         """
         content = self.create_embedding_content(chunk)
 
-        # Encode using model with proper prompt
-        embedding = self._model.encode(
-            [content],
-            prompt_name="Retrieval-document",
-            show_progress_bar=False
-        )[0]
+        embedding = self._encode_documents([content])[0]
 
         # Create chunk ID
         chunk_id = f"{chunk.relative_path}:{chunk.start_line}-{chunk.end_line}:{chunk.chunk_type}"
@@ -165,6 +228,13 @@ class CodeEmbedder:
         """
         results = []
 
+        env_batch = os.getenv("CODE_SEARCH_BATCH_SIZE")
+        if env_batch:
+            try:
+                batch_size = max(1, int(env_batch))
+            except ValueError:
+                pass
+
         self._logger.info(f"Generating embeddings for {len(chunks)} chunks")
 
         # Process in batches
@@ -172,12 +242,7 @@ class CodeEmbedder:
             batch = chunks[i:i + batch_size]
             batch_contents = [self.create_embedding_content(chunk) for chunk in batch]
 
-            # Generate embeddings for batch
-            batch_embeddings = self._model.encode(
-                batch_contents,
-                prompt_name="Retrieval-document",
-                show_progress_bar=False
-            )
+            batch_embeddings = self._encode_documents(batch_contents)
 
             # Create results
             for chunk, embedding in zip(batch, batch_embeddings):
@@ -223,12 +288,11 @@ class CodeEmbedder:
         Returns:
             Embedding vector
         """
-        embedding = self._model.encode(
-            [query],
-            prompt_name="InstructionRetrieval",
-            show_progress_bar=False
-        )[0]
-        return embedding
+        return self._encode_queries([query])[0]
+
+    def embed_document(self, text: str) -> np.ndarray:
+        """Generate a document embedding for arbitrary text (same prompt path as chunks)."""
+        return self._encode_documents([text])[0]
 
     def get_model_info(self) -> Dict[str, Any]:
         """Get information about the embedding model.
