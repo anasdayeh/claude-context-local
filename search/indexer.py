@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import asdict
 import numpy as np
+import torch
 import faiss
 from sqlitedict import SqliteDict
 from embeddings.embedder import EmbeddingResult
