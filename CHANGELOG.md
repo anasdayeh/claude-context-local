@@ -16,3 +16,5 @@
 - Added optional log file routing and configured log handlers to avoid stdout pollution and reduce stderr volume.
 - Suppressed third-party warnings/verbosity to minimize stderr output and prevent Codex stdio transport closures.
 - Replaced FAISS reconstruct-based context expansion with same-file neighbor context to avoid segfaults when CODE_SEARCH_INCLUDE_CONTEXT=1.
+- Ensured PyTorch initializes before FAISS (import ordering) to avoid OpenMP runtime crashes on Apple Silicon.
+- Disabled model preload by default (CODE_SEARCH_PRELOAD_MODEL=0) to prevent blocking the stdio initialize handshake.

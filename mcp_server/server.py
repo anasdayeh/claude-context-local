@@ -1,13 +1,10 @@
 """FastMCP server for Claude Code integration - main entry point."""
 import sys
-
-# CRITICAL: Import FAISS before torch to avoid OpenMP runtime conflicts on Apple Silicon
-# See: https://github.com/facebookresearch/faiss/issues/2913
-import faiss  # noqa: F401
 import os
 import json
 import logging
 import warnings
+import asyncio
 from pathlib import Path
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -66,7 +63,8 @@ logging.getLogger("fastmcp").setLevel(getattr(logging, log_level))
 @asynccontextmanager
 async def _lifespan(app: FastMCP):
     """FastMCP lifespan hook for startup/shutdown."""
-    server._maybe_start_model_preload()
+    if os.getenv("CODE_SEARCH_PRELOAD_MODEL", "").lower() in {"1", "true", "yes"}:
+        server._maybe_start_model_preload()
     try:
         yield
     finally:
@@ -132,11 +130,14 @@ async def index_directory(
     incremental: bool = True,
     ctx: Optional[Context] = None,
 ) -> str:
-    result = server.index_directory(
-        directory_path=directory_path,
-        project_name=project_name,
-        file_patterns=file_patterns,
-        incremental=incremental,
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(
+        None,
+        server.index_directory,
+        directory_path,
+        project_name,
+        file_patterns,
+        incremental,
     )
     await _notify_stats_updated(ctx)
     return result
@@ -170,7 +171,8 @@ async def switch_project(project_path: str, ctx: Optional[Context] = None) -> st
 
 @mcp.tool(description=STRINGS["tools"].get("index_test_project", "Index test project"))
 async def index_test_project(ctx: Optional[Context] = None) -> str:
-    result = server.index_test_project()
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, server.index_test_project)
     await _notify_stats_updated(ctx)
     return result
 
