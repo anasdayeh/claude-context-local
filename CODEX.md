@@ -1,10 +1,10 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex when working with code in this repository.
 
 ## Project Overview
 
-Claude Embedding Search is an intelligent code search system that uses Google's EmbeddingGemma model and AST-based chunking to provide semantic search capabilities for Python codebases, integrated with Claude Code via MCP (Model Context Protocol).
+Codex Embedding Search is an intelligent code search system that uses Google's EmbeddingGemma model and AST-based chunking to provide semantic search capabilities for Python codebases, integrated with Codex via MCP (Model Context Protocol).
 
 ## Key Commands
 
@@ -68,14 +68,23 @@ python -m pytest tests/unit/test_chunking.py -v  # Single test file
 
 ```bash
 # Run MCP server directly
-uv run python mcp_server/server.py
+uv run python mcp_server/server.py --transport stdio
 
-# Add to Claude Code (global)
-claude mcp add code-search --scope user -- uv run --directory /full/path/to/claude_embedding_search python mcp_server/server.py
+# Add to Codex (global)
+codex mcp add claude_context_local --scope user -- uv run --directory ~/.local/share/claude-context-local python mcp_server/server.py --transport stdio
 
-# Add to Claude Code (project-specific)
-claude mcp add code-search -- uv run --directory /full/path/to/claude_embedding_search python mcp_server/server.py
+# Add to Codex (project-specific)
+codex mcp add claude_context_local -- uv run --directory ~/.local/share/claude-context-local python mcp_server/server.py --transport stdio
 ```
+
+### MCP Environment Options
+
+- `CODE_SEARCH_STORAGE`: Base directory for indexes and model cache.
+- `CODE_SEARCH_DEVICE`: `cpu` | `mps` | `cuda` (auto if unset).
+- `CODE_SEARCH_PRELOAD_MODEL`: `1` to preload on startup (off by default).
+- `CODE_SEARCH_CHUNK_BATCH_SIZE`: chunk batch size for indexing.
+- `CODE_SEARCH_EMBED_BATCH_SIZE`: embedding batch size for model encode.
+- `CODE_SEARCH_INCLUDE_CONTEXT`: include same-file context in search results.
 
 ## Architecture
 
@@ -93,9 +102,10 @@ The codebase is organized into distinct modules with clear separation of concern
 - **`search/`**: FAISS-based search and indexing
   - `indexer.py`: Manages FAISS indices, metadata storage (SQLite), and index persistence
   - `searcher.py`: Intelligent search with filtering, context-aware results, and similarity search
-- **`mcp_server/`**: Claude Code integration via MCP
+- **`mcp_server/`**: Codex integration via MCP
 
-  - `server.py`: FastMCP server exposing search tools to Claude Code
+  - `server.py`: FastMCP server exposing search tools to Codex
+  - `code_search_mcp.py`: legacy shim used by tests
   - Provides `search_code`, `index_directory`, `find_similar_code`, etc.
 
 - **`merkle/`**: Incremental indexing support
@@ -148,7 +158,7 @@ Tests are organized by component with pytest markers:
 
 - `sentence-transformers`: EmbeddingGemma model loading and inference
 - `faiss-cpu`: Efficient vector similarity search
-- `fastmcp`: MCP server implementation for Claude Code integration
+- `fastmcp`: MCP server implementation for Codex integration
 - `sqlitedict`: Persistent metadata storage
 - `tree-sitter` & `tree-sitter-languages`: Multi-language parsing support
 - `click`: Command-line interface utilities
@@ -165,6 +175,9 @@ Tests are organized by component with pytest markers:
 ### Environment Variables
 
 - `CODE_SEARCH_STORAGE`: Custom storage directory (default: `~/.claude_code_search`)
+- `CODE_SEARCH_CHUNK_BATCH_SIZE`: Chunk batch size for indexing (default: 256)
+- `CODE_SEARCH_EMBED_BATCH_SIZE`: Embed batch size for model inference (falls back to `CODE_SEARCH_BATCH_SIZE`)
+- `CODE_SEARCH_TORCH_BEFORE_FAISS`: Force torch import before FAISS on startup (`true`/`false`)
 
 ## Common Tasks
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Remote installer for Claude Code Local Context
+# Remote installer for Codex Local Context
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/FarhanAliRaza/claude-context-local/main/scripts/install.sh | bash
 
@@ -13,7 +13,7 @@ MODEL_NAME="google/embeddinggemma-300m"
 print() { printf "%b\n" "$1"; }
 hr() { print "\n==================================================\n"; }
 
-hr; print "Installing Claude Context Local"; hr
+hr; print "Installing Codex Context Local"; hr
 
 # 1) Ensure git is available
 if ! command -v git >/dev/null 2>&1; then
@@ -83,7 +83,7 @@ fi
 # 4) Install Python dependencies
 if [[ "${SKIP_UPDATE:-0}" != "1" ]]; then
   print "Installing Python dependencies with uv"
-  (cd "${PROJECT_DIR}" && uv sync)
+  (cd "${PROJECT_DIR}" && uv sync --python 3.13)
 else
   print "Skipping dependency update (keeping current version)"
 fi
@@ -143,16 +143,16 @@ if [[ "${IS_UPDATE}" -eq 1 ]]; then
   printf "${YELLOW}Run these commands:${NC}\n\n"
   
   printf "${BOLD}1) Remove old server:${NC}\n"
-  printf "   ${BLUE}claude mcp remove code-search${NC}\n\n"
+  printf "   ${BLUE}codex mcp remove claude_context_local${NC}\n\n"
   
   printf "${BOLD}2) Add updated server:${NC}\n"
-  printf "   ${BLUE}claude mcp add code-search --scope user -- uv run --directory ${PROJECT_DIR} python mcp_server/server.py${NC}\n\n"
+  printf "   ${BLUE}codex mcp add claude_context_local --scope user -- uv run --directory ${PROJECT_DIR} python mcp_server/server.py --transport stdio${NC}\n\n"
   
   printf "${BOLD}3) Verify connection:${NC}\n"
-  printf "   ${BLUE}claude mcp list${NC}\n"
-  printf "   ${GREEN}Look for: code-search ... ✓ Connected${NC}\n\n"
+  printf "   ${BLUE}codex mcp list${NC}\n"
+  printf "   ${GREEN}Look for: claude_context_local ... ✓ Connected${NC}\n\n"
   
-  printf "${BOLD}4) Then in Claude Code:${NC}\n"
+  printf "${BOLD}4) Then in Codex:${NC}\n"
   printf "   ${BLUE}index this codebase${NC}\n\n"
   
   printf "${YELLOW}💡 Notes:${NC}\n"
@@ -167,19 +167,18 @@ else
   
   printf "${BOLD}Next steps:${NC}\n\n"
   
-  printf "${BOLD}1) Add MCP server to Claude Code:${NC}\n"
-  printf "   ${BLUE}claude mcp add code-search --scope user -- uv run --directory ${PROJECT_DIR} python mcp_server/server.py${NC}\n\n"
+  printf "${BOLD}1) Add MCP server to Codex:${NC}\n"
+  printf "   ${BLUE}codex mcp add claude_context_local --scope user -- uv run --directory ${PROJECT_DIR} python mcp_server/server.py --transport stdio${NC}\n\n"
   
   printf "${BOLD}2) Verify connection:${NC}\n"
-  printf "   ${BLUE}claude mcp list${NC}\n"
-  printf "   ${GREEN}Look for: code-search ... ✓ Connected${NC}\n\n"
+  printf "   ${BLUE}codex mcp list${NC}\n"
+  printf "   ${GREEN}Look for: claude_context_local ... ✓ Connected${NC}\n\n"
   
-  printf "${BOLD}3) Then in Claude Code:${NC}\n"
+  printf "${BOLD}3) Then in Codex:${NC}\n"
   printf "   ${BLUE}index this codebase${NC}\n\n"
   
   printf "${YELLOW}💡 Notes:${NC}\n"
   printf "%s\n" "• To update later, re-run this installer"
   printf "%s\n" "• Your embeddings will be stored in ${STORAGE_DIR}"
 fi
-
 

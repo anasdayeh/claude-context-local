@@ -5,7 +5,12 @@ for the tree-sitter based code chunking system.
 """
 
 import logging
-from tree_sitter import Language
+try:
+    from tree_sitter import Language
+    TREE_SITTER_AVAILABLE = True
+except ImportError:
+    Language = None
+    TREE_SITTER_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +20,10 @@ def get_availiable_language():
     """
     # Try to import language bindings
     res = {}
+
+    if not TREE_SITTER_AVAILABLE:
+        logger.warning("tree-sitter module not found. Code chunking will fallback to text.")
+        return res
 
     # Prefer tree-sitter-language-pack when available (broader coverage)
     try:

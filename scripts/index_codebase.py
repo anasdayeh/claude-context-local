@@ -156,7 +156,7 @@ def main():
                 logger.info(f"  {tag}: {count}")
         
         logger.info(f"\nStorage location: {storage_dir}")
-        logger.info("\nYou can now use the MCP server for Claude Code integration:")
+        logger.info("\nYou can now use the MCP server for Codex integration:")
         logger.info(f"  python {Path(__file__).parent.parent / 'mcp_server' / 'server.py'}")
         
     except KeyboardInterrupt:

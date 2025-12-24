@@ -1,1 +1,1 @@
-"""MCP server for Claude Code integration."""
+"""MCP server for Codex integration."""

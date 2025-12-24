@@ -27,6 +27,45 @@ class SearchResult:
     tags: List[str]
     context_info: Dict[str, Any]
 
+    def to_search_tool_dict(self) -> Dict[str, Any]:
+        """Serialize for the search_code MCP tool."""
+        item = {
+            "file": self.relative_path,
+            "lines": f"{self.start_line}-{self.end_line}",
+            "kind": self.chunk_type,
+            "score": round(self.similarity_score, 2),
+            "chunk_id": self.chunk_id,
+        }
+        if self.name:
+            item["name"] = self.name
+        snippet = self._make_snippet(self.content_preview)
+        if snippet:
+            item["snippet"] = snippet
+        return item
+
+    def to_similar_tool_dict(self) -> Dict[str, Any]:
+        """Serialize for the find_similar_code MCP tool."""
+        return {
+            "file_path": self.relative_path,
+            "lines": f"{self.start_line}-{self.end_line}",
+            "chunk_type": self.chunk_type,
+            "name": self.name,
+            "similarity_score": round(self.similarity_score, 3),
+            "content_preview": self.content_preview,
+            "tags": self.tags,
+        }
+
+    @staticmethod
+    def _make_snippet(preview: Optional[str]) -> str:
+        if not preview:
+            return ""
+        for line in preview.split("\n"):
+            s = line.strip()
+            if s:
+                snippet = " ".join(s.split())
+                return (snippet[:157] + "...") if len(snippet) > 160 else snippet
+        return ""
+
 
 class IntelligentSearcher:
     """Intelligent code search with query optimization and context awareness."""
@@ -76,7 +115,7 @@ class IntelligentSearcher:
         
         This provides semantic search capabilities. For complete search coverage:
         - Use this tool for conceptual/functionality queries
-        - Use Claude Code's Grep for exact term matching
+        - Use Codex's Grep for exact term matching
         - Combine both for comprehensive results
         
         Args:

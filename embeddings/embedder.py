@@ -1,313 +1,231 @@
-"""Code embedding wrapper using EmbeddingGemma model."""
+"""Main embedding logic for handling code and queries."""
 
 import logging
-import os
-from typing import List, Optional, Dict, Any
+from typing import List, Dict, Any, Optional, Set
 from dataclasses import dataclass
 import numpy as np
 
 from chunking.code_chunk import CodeChunk
 from embeddings.embedding_models_register import AVAILIABLE_MODELS
-from common_utils import get_storage_dir
-
 
 @dataclass
 class EmbeddingResult:
-    """Result of embedding generation."""
+    """Result of embedding generation for a chunk."""
+    chunk: CodeChunk
     embedding: np.ndarray
-    chunk_id: str
-    metadata: Dict[str, Any]
+    model_name: str
+    tokens: int = 0
+    @property
+    def chunk_id(self) -> str:
+        """Generate a stable unique ID for this chunk."""
+        import hashlib
+        # Combine path, name, lines, and type for uniqueness
+        raw_id = f"{self.chunk.relative_path}:{self.chunk.name}:{self.chunk.start_line}:{self.chunk.chunk_type}"
+        return hashlib.md5(raw_id.encode()).hexdigest()
 
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        """Convert chunk into storage-ready metadata dictionary."""
+        return {
+            "name": self.chunk.name,
+            "chunk_id": self.chunk_id,
+            "chunk_type": self.chunk.chunk_type,
+            "start_line": self.chunk.start_line,
+            "end_line": self.chunk.end_line,
+            "relative_path": self.chunk.relative_path,
+            "file_path": self.chunk.file_path,
+            "parent_name": self.chunk.parent_name,
+            "tags": self.chunk.tags,
+            "content": self.chunk.content,
+            "content_preview": self.chunk.content,
+            "folder_structure": self.chunk.folder_structure,
+            "model": self.model_name
+        }
 
 class CodeEmbedder:
-    """Wrapper for embedding code chunks using EmbeddingGemma model."""
+    """Handles embedding generation for code chunks and search queries using semantic models."""
 
     def __init__(
         self,
         model_name: str = "google/embeddinggemma-300m",
-        cache_dir: Optional[str] = None,
-        device: str = "auto"
+        device: str = "auto",
+        cache_dir: Optional[str] = None
     ):
-        """Initialize code embedder.
-
-        Args:
-            model_name: Name of the embedding model to use
-            cache_dir: Directory to cache the model
-            device: Device to load model on
-        """
-        if device == "auto":
-            env_device = os.getenv("CODE_SEARCH_DEVICE")
-            if env_device:
-                device = env_device
-
-        if not cache_dir: # if not provided, use default
-            cache_dir = str(get_storage_dir() / "models")
-        self.device = device
-        self._document_prompt_name: Optional[str] = None
-        self._query_prompt_name: Optional[str] = None
-
-        # Get model class from available models
-        model_class = AVAILIABLE_MODELS[model_name]
-        self._model = model_class(cache_dir=cache_dir, device=device)
-
+        """Initialize code embedder."""
         self._logger = logging.getLogger(__name__)
-        logging.basicConfig(level=logging.INFO)
+
+        # Normalize model name if using known aliases
+        if model_name in AVAILIABLE_MODELS:
+            model_class = AVAILIABLE_MODELS[model_name]
+        else:
+            model_class = AVAILIABLE_MODELS.get(model_name)
+            if not model_class:
+                for k, v in AVAILIABLE_MODELS.items():
+                    if k.endswith(model_name) or model_name.endswith(k):
+                        model_class = v
+                        model_name = k
+                        break
+            
+            if not model_class:
+                available = sorted(AVAILIABLE_MODELS.keys())
+                raise ValueError(f"Unknown model '{model_name}'. Available: {available}")
+
+        self.model_name = model_name
+        try:
+            self._model = model_class(
+                model_name,
+                device=device,
+                cache_dir=cache_dir
+            )
+        except Exception as e:
+            msg = f"Failed to load model '{model_name}': {e}"
+            self._logger.error(msg)
+            raise RuntimeError(msg) from e
 
     @property
-    def model(self):
-        """Get the underlying embedding model."""
-        return self._model.model
+    def raw_model(self):
+        """Access the underlying SentenceTransformer model for introspection."""
+        return getattr(self._model, "model", self._model)
 
-    def _resolve_prompt_name(self, candidates: List[str]) -> Optional[str]:
-        """Pick the first available prompt name from the model registry."""
-        prompts = getattr(self.model, "prompts", None)
-        if not isinstance(prompts, dict):
+    def _resolve_prompt_name(self, is_query: bool) -> Optional[str]:
+        """Resolve generic prompt names to model-specific ones via introspection."""
+        prompts = getattr(self.raw_model, "prompts", {})
+        if not prompts:
             return None
-        for name in candidates:
-            if name in prompts:
-                return name
-        return None
-
-    def _get_document_prompt_name(self) -> Optional[str]:
-        if self._document_prompt_name is None:
-            self._document_prompt_name = self._resolve_prompt_name(
-                ["Retrieval-document", "document", "text"]
-            )
-            if not self._document_prompt_name:
-                self._logger.warning(
-                    "No document prompt found in model registry; embedding without a prompt."
-                )
-        return self._document_prompt_name
-
-    def _get_query_prompt_name(self) -> Optional[str]:
-        if self._query_prompt_name is None:
-            self._query_prompt_name = self._resolve_prompt_name(
-                ["InstructionRetrieval", "query"]
-            )
-            if not self._query_prompt_name:
-                self._logger.warning(
-                    "No query prompt found in model registry; embedding without a prompt."
-                )
-        return self._query_prompt_name
+        if is_query:
+            return "query" if "query" in prompts else None
+        else:
+            return "document" if "document" in prompts else None
 
     def _encode_documents(self, texts: List[str]) -> np.ndarray:
-        """Encode documents with the best available prompt."""
-        prompt_name = self._get_document_prompt_name()
+        """Encode documents using robust wrapper methods."""
         encode_kwargs = {"show_progress_bar": False}
-        if prompt_name:
-            encode_kwargs["prompt_name"] = prompt_name
-
-        model = self.model
-        if hasattr(model, "encode_document"):
-            embeddings = model.encode_document(texts, **encode_kwargs)
+        
+        if hasattr(self._model, "encode_document"):
+            embeddings = self._model.encode_document(texts, **encode_kwargs)
         else:
-            embeddings = model.encode(texts, **encode_kwargs)
+            prompt_name = self._resolve_prompt_name(is_query=False)
+            embeddings = self._model.encode(
+                texts,
+                prompt_name=prompt_name,
+                **encode_kwargs,
+            )
         return np.asarray(embeddings, dtype=np.float32)
 
     def _encode_queries(self, texts: List[str]) -> np.ndarray:
-        """Encode queries with the best available prompt."""
-        prompt_name = self._get_query_prompt_name()
+        """Encode queries using robust wrapper methods."""
         encode_kwargs = {"show_progress_bar": False}
-        if prompt_name:
-            encode_kwargs["prompt_name"] = prompt_name
 
-        model = self.model
-        if hasattr(model, "encode_query"):
-            embeddings = model.encode_query(texts, **encode_kwargs)
+        if hasattr(self._model, "encode_query"):
+            embeddings = self._model.encode_query(texts, **encode_kwargs)
         else:
-            embeddings = model.encode(texts, **encode_kwargs)
+            prompt_name = self._resolve_prompt_name(is_query=True)
+            embeddings = self._model.encode(
+                texts,
+                prompt_name=prompt_name,
+                **encode_kwargs,
+            )
         return np.asarray(embeddings, dtype=np.float32)
 
-    def create_embedding_content(self, chunk: CodeChunk, max_chars: int = 6000) -> str:
-        """Create clean content for embedding generation.
+    def create_embedding_content(self, chunk: CodeChunk, max_chars: int = 2048) -> str:
+        """Create formatted content string for embedding."""
+        parts = []
+        name = chunk.name or "unknown"
+        chunk_type = chunk.chunk_type or "unknown"
+        
+        parts.append(f"Name: {name}")
+        parts.append(f"Type: {chunk_type}")
+        
+        if getattr(chunk, 'parent_name', None):
+             parts.append(f"Context: {chunk.parent_name}")
 
-        Args:
-            chunk: Code chunk to create content for
-            max_chars: Maximum characters to include
+        tags = chunk.tags or []
+        if tags:
+            parts.append(f"Tags: {', '.join(tags)}")
 
-        Returns:
-            Content string for embedding
-        """
-        content_parts = []
+        docstring = chunk.docstring or ""
+        overhead = sum(len(p) + 1 for p in parts) + 10 
+        
+        remaining_budget = max_chars - overhead
+        docstring_len = len(docstring)
+        
+        if remaining_budget <= 20:
+             return f"Name: {name}\n{(chunk.content or '')[:max_chars//2]}"
 
-        # Add docstring if available
-        docstring_budget = 300
-        if chunk.docstring:
-            docstring = chunk.docstring[:docstring_budget] + "..." if len(chunk.docstring) > docstring_budget else chunk.docstring
-            content_parts.append(f'"""{docstring}"""')
-
-        # Calculate remaining budget for code content
-        docstring_len = len(content_parts[0]) if content_parts else 0
-        remaining_budget = max_chars - docstring_len - 10
-
-        # Add code content with smart truncation
-        if len(chunk.content) <= remaining_budget:
-            content_parts.append(chunk.content)
-        else:
-            lines = chunk.content.split('\n')
-            if len(lines) > 3:
-                head_lines = []
-                tail_lines = []
-                current_length = docstring_len
-
-                # Add head lines
-                for line in lines[:min(len(lines)//2, 20)]:
-                    if current_length + len(line) + 1 > remaining_budget * 0.7:
-                        break
-                    head_lines.append(line)
-                    current_length += len(line) + 1
-
-                # Add tail lines
-                remaining_space = remaining_budget - current_length - 20
-                for line in reversed(lines[-min(len(lines)//3, 10):]):
-                    if len('\n'.join(tail_lines)) + len(line) + 1 > remaining_space:
-                        break
-                    tail_lines.insert(0, line)
-
-                if tail_lines:
-                    truncated_content = '\n'.join(head_lines) + '\n    # ... (truncated) ...\n' + '\n'.join(tail_lines)
-                else:
-                    truncated_content = '\n'.join(head_lines) + '\n    # ... (truncated) ...'
-                content_parts.append(truncated_content)
-            else:
-                content_parts.append(chunk.content[:remaining_budget] + "..." if len(chunk.content) > remaining_budget else chunk.content)
-
-        return '\n'.join(content_parts)
-
-    def embed_chunk(self, chunk: CodeChunk) -> EmbeddingResult:
-        """Generate embedding for a single code chunk.
-
-        Args:
-            chunk: Code chunk to embed
-
-        Returns:
-            EmbeddingResult with embedding and metadata
-        """
-        content = self.create_embedding_content(chunk)
-
-        embedding = self._encode_documents([content])[0]
-
-        # Create chunk ID
-        chunk_id = f"{chunk.relative_path}:{chunk.start_line}-{chunk.end_line}:{chunk.chunk_type}"
-        if chunk.name:
-            chunk_id += f":{chunk.name}"
-
-        # Prepare metadata
-        metadata = {
-            'file_path': chunk.file_path,
-            'relative_path': chunk.relative_path,
-            'folder_structure': chunk.folder_structure,
-            'chunk_type': chunk.chunk_type,
-            'start_line': chunk.start_line,
-            'end_line': chunk.end_line,
-            'name': chunk.name,
-            'parent_name': chunk.parent_name,
-            'docstring': chunk.docstring,
-            'decorators': chunk.decorators,
-            'imports': chunk.imports,
-            'complexity_score': chunk.complexity_score,
-            'tags': chunk.tags,
-            'content_preview': chunk.content[:200] + "..." if len(chunk.content) > 200 else chunk.content
-        }
-
-        return EmbeddingResult(
-            embedding=embedding,
-            chunk_id=chunk_id,
-            metadata=metadata
-        )
+        docstring_budget = min(docstring_len, int(remaining_budget * 0.3))
+        if docstring_len < remaining_budget * 0.5:
+             docstring_budget = docstring_len
+             
+        if docstring:
+             parts.append(f"Docstring: {docstring[:docstring_budget]}")
+             
+        current_used = sum(len(p) + 1 for p in parts)
+        code_budget = max(0, max_chars - current_used)
+        
+        content = chunk.content or ""
+        header = "\n".join(parts)
+        
+        if not content:
+            return header
+            
+        full_text = f"{header}\n{content}"
+        
+        if len(full_text) > max_chars:
+            allowed_content_len = max(0, max_chars - len(header) - 1)
+            return f"{header}\n{content[:allowed_content_len]}"
+            
+        return full_text
 
     def embed_chunks(self, chunks: List[CodeChunk], batch_size: int = 32) -> List[EmbeddingResult]:
-        """Generate embeddings for multiple chunks with batching.
+        """Generate embeddings for code chunks in batches."""
+        if not chunks:
+            return []
 
-        Args:
-            chunks: List of code chunks to embed
-            batch_size: Batch size for processing
-
-        Returns:
-            List of EmbeddingResults
-        """
+        texts = [self.create_embedding_content(chunk) for chunk in chunks]
         results = []
+        total = len(texts)
+        
+        self._logger.info(f"Generating embeddings for {total} chunks (batch_size={batch_size})")
 
-        env_batch = os.getenv("CODE_SEARCH_BATCH_SIZE")
-        if env_batch:
+        for i in range(0, total, batch_size):
+            batch_texts = texts[i : i + batch_size]
+            batch_chunks = chunks[i : i + batch_size]
             try:
-                batch_size = max(1, int(env_batch))
-            except ValueError:
-                pass
+                self._logger.info(f"Loop {i}: text_len={len(batch_texts)} chunk_len={len(batch_chunks)}")
+                batch_embeddings = self._encode_documents(batch_texts)
+                self._logger.info(f"Loop {i}: embed_len={len(batch_embeddings)}")
+                
+                # Zip embeddings with chunks to create result objects
+                batch_results = []
+                for chunk, embedding in zip(batch_chunks, batch_embeddings):
+                    batch_results.append(EmbeddingResult(
+                        chunk=chunk,
+                        embedding=embedding,
+                        model_name=self.model_name
+                    ))
+                self._logger.info(f"Loop {i}: zipped_results={len(batch_results)}")
+                results.extend(batch_results)
+            except Exception as e:
+                self._logger.error(f"Batch encoding failed at index {i}: {e}")
+                raise
 
-        self._logger.info(f"Generating embeddings for {len(chunks)} chunks")
-
-        # Process in batches
-        for i in range(0, len(chunks), batch_size):
-            batch = chunks[i:i + batch_size]
-            batch_contents = [self.create_embedding_content(chunk) for chunk in batch]
-
-            batch_embeddings = self._encode_documents(batch_contents)
-
-            # Create results
-            for chunk, embedding in zip(batch, batch_embeddings):
-                chunk_id = f"{chunk.relative_path}:{chunk.start_line}-{chunk.end_line}:{chunk.chunk_type}"
-                if chunk.name:
-                    chunk_id += f":{chunk.name}"
-
-                metadata = {
-                    'file_path': chunk.file_path,
-                    'relative_path': chunk.relative_path,
-                    'folder_structure': chunk.folder_structure,
-                    'chunk_type': chunk.chunk_type,
-                    'start_line': chunk.start_line,
-                    'end_line': chunk.end_line,
-                    'name': chunk.name,
-                    'parent_name': chunk.parent_name,
-                    'docstring': chunk.docstring,
-                    'decorators': chunk.decorators,
-                    'imports': chunk.imports,
-                    'complexity_score': chunk.complexity_score,
-                    'tags': chunk.tags,
-                    'content_preview': chunk.content[:200] + "..." if len(chunk.content) > 200 else chunk.content
-                }
-
-                results.append(EmbeddingResult(
-                    embedding=embedding,
-                    chunk_id=chunk_id,
-                    metadata=metadata
-                ))
-
-            if i + batch_size < len(chunks):
-                self._logger.info(f"Processed {i + batch_size}/{len(chunks)} chunks")
-
-        self._logger.info("Embedding generation completed")
+        self._logger.info(f"Embedding generation completed. Results: {len(results)}")
         return results
 
     def embed_query(self, query: str) -> np.ndarray:
-        """Generate embedding for a search query.
-
-        Args:
-            query: Search query text
-
-        Returns:
-            Embedding vector
-        """
         return self._encode_queries([query])[0]
 
     def embed_document(self, text: str) -> np.ndarray:
-        """Generate a document embedding for arbitrary text (same prompt path as chunks)."""
         return self._encode_documents([text])[0]
 
     def get_model_info(self) -> Dict[str, Any]:
-        """Get information about the embedding model.
-
-        Returns:
-            Dictionary with model information
-        """
         return self._model.get_model_info()
 
     def cleanup(self):
-        """Clean up model resources."""
-        self._model.cleanup()
+        if hasattr(self, '_model'):
+            self._model.cleanup()
 
     def __del__(self):
-        """Ensure cleanup on object destruction."""
         try:
             self.cleanup()
         except Exception:

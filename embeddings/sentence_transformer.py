@@ -1,19 +1,18 @@
-"""SentenceTransformer embedding model implementation."""
+"""SentenceTransformer model implementation."""
 
-from typing import Optional, Dict, Any
-from pathlib import Path
-from functools import cached_property
-import os
 import logging
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 import numpy as np
-from sentence_transformers import SentenceTransformer
 import torch
+from sentence_transformers import SentenceTransformer
 
 from embeddings.embedding_model import EmbeddingModel
 
 
 class SentenceTransformerModel(EmbeddingModel):
-    """SentenceTransformer embedding model with caching and device management."""
+    """SentenceTransformer wrapper with robustness features."""
 
     def __init__(
         self,
@@ -21,60 +20,41 @@ class SentenceTransformerModel(EmbeddingModel):
         cache_dir: Optional[str] = None,
         device: str = "auto",
         trust_remote_code: bool = False,
-        backend: Optional[str] = None,
-        model_kwargs: Optional[Dict[str, Any]] = None
     ):
-        """Initialize SentenceTransformerModel.
-
-        Args:
-            model_name: Name of the model to load
-            cache_dir: Directory to cache the model
-            device: Device to load model on
-        """
-        super().__init__(device=device)
+        """Initialize SentenceTransformer model."""
+        super().__init__(device)
         self.model_name = model_name
         self.cache_dir = cache_dir
         self.trust_remote_code = trust_remote_code
-        self.backend = (backend or os.environ.get("ST_BACKEND", "torch")).lower()
-        self.model_kwargs = model_kwargs or {}
+        self._logger = logging.getLogger(__name__)
+        
+        # State tracking
+        self.backend = "torch"
         self._model_loaded = False
         self._fallback_attempted = False
-        self._logger = logging.getLogger(__name__)
 
-    @cached_property
-    def model(self):
-        """Load and cache the SentenceTransformer model."""
-        self._logger.info(f"Loading model: {self.model_name}")
-
-        # If the model appears to be cached locally, enable offline mode
-        local_model_dir = None
-        try:
-            if self._is_model_cached():
-                os.environ.setdefault("HF_HUB_OFFLINE", "1")
-                os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-                self._logger.info("Model cache detected. Enabling offline mode for faster startup.")
-                local_model_dir = self._find_local_model_dir()
-                if local_model_dir:
-                    self._logger.info(f"Loading model from local cache path: {local_model_dir}")
-        except Exception as e:
-            self._logger.debug(f"Offline mode detection skipped: {e}")
-
-        try:
-            model_source = str(local_model_dir) if local_model_dir else self.model_name
-            model = self._load_model(model_source)
-            self._logger.info(f"Model loaded successfully on device: {model.device}")
+    @property
+    def model(self) -> SentenceTransformer:
+        """Lazy load the model."""
+        if not self._model_loaded:
+            self.__dict__["model"] = self._load_model()
             self._model_loaded = True
-            return self._maybe_quantize_onnx(model)
-        except Exception as e:
-            self._logger.error(f"Failed to load model: {e}")
-            raise
+        return self.__dict__["model"]
 
-    def _load_model(self, model_source: str) -> SentenceTransformer:
-        """Load model with backend-specific options."""
+    def _load_model(self) -> SentenceTransformer:
+        """Load the model with backend fallback logic."""
+        model_source = self.model_name
+        if self._is_model_cached():
+            local_path = self._find_local_model_dir()
+            if local_path:
+                model_source = str(local_path)
+        
         backend = self.backend
-        model_kwargs = dict(self.model_kwargs)
-
+        model_kwargs = {}
+        
         if backend == "onnx":
+            # Configure ONNX kwargs based on env/defaults
+            # This matches sbert.net behavior for backend="onnx"
             provider = os.environ.get("ST_ONNX_PROVIDER")
             file_name = os.environ.get("ST_ONNX_FILE_NAME")
             export_flag = os.environ.get("ST_ONNX_EXPORT")
@@ -99,6 +79,7 @@ class SentenceTransformerModel(EmbeddingModel):
                 self._logger.warning(
                     f"Failed to load ONNX backend, falling back to PyTorch: {e}"
                 )
+                self.backend = "torch" # Update state
                 return SentenceTransformer(
                     model_source,
                     cache_folder=self.cache_dir,
@@ -182,15 +163,7 @@ class SentenceTransformerModel(EmbeddingModel):
         return str(candidates[0].relative_to(quant_dir))
 
     def encode(self, texts: list[str], **kwargs) -> np.ndarray:
-        """Encode texts using SentenceTransformer.
-
-        Args:
-            texts: List of texts to encode
-            **kwargs: Additional arguments passed to SentenceTransformer.encode()
-
-        Returns:
-            Array of embeddings
-        """
+        """Encode texts using SentenceTransformer with fallback logic."""
         try:
             return self.model.encode(texts, **kwargs)
         except Exception as e:
@@ -219,6 +192,31 @@ class SentenceTransformerModel(EmbeddingModel):
 
             raise
 
+    def encode_query(self, texts: List[str], **kwargs) -> np.ndarray:
+        """Encode queries using model-specific method if available."""
+        try:
+            m = self.model
+            if hasattr(m, "encode_query"):
+                return m.encode_query(texts, **kwargs)
+            # Fallback for models that support task prompt
+            return m.encode(texts, prompt_name="query", **kwargs)
+        except Exception:
+            # Re-route through robust encode() which includes fallback logic
+            # Use task arg which some models support
+            return self.encode(texts, **kwargs)
+
+    def encode_document(self, texts: List[str], **kwargs) -> np.ndarray:
+        """Encode documents using model-specific method if available."""
+        try:
+            m = self.model
+            if hasattr(m, "encode_document"):
+                return m.encode_document(texts, **kwargs)
+            # Fallback for models that support task prompt
+            return m.encode(texts, prompt_name="document", **kwargs)
+        except Exception:
+            # Re-route through robust encode()
+            return self.encode(texts, **kwargs)
+
     def get_embedding_dimension(self) -> int:
         """Get embedding dimension."""
         return self.model.get_sentence_embedding_dimension()
@@ -242,13 +240,25 @@ class SentenceTransformerModel(EmbeddingModel):
             return
 
         try:
-            model = self.model
-            model.to('cpu')
-
+            # Drop from memory
+            if "model" in self.__dict__:
+                model = self.__dict__["model"]
+                if hasattr(model, 'to'):
+                    try:
+                        model.to('cpu')
+                    except Exception:
+                        pass
+            
+            # Clear caches
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                try:
+                    torch.mps.empty_cache()
+                except Exception:
+                    pass
 
-            del model
+            self._reset_model()
             self._logger.info("Model cleaned up and memory freed")
         except Exception as e:
             self._logger.warning(f"Error during model cleanup: {e}")

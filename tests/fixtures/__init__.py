@@ -1,1 +1,1 @@
-"""Test fixtures for claude_embedding_search tests."""
+"""Test fixtures for codex_embedding_search tests."""

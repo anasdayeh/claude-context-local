@@ -1,6 +1,5 @@
 """Test MCP server project-specific storage functionality."""
 
-import json
 import pytest
 
 from mcp_server.code_search_server import CodeSearchServer
@@ -18,7 +17,7 @@ class TestMCPProjectStorage:
     def test_index_test_project(self):
         """Test indexing the test project."""
         result = self.server.index_test_project()
-        result_data = json.loads(result)
+        result_data = result
 
         assert "error" not in result_data, f"Failed to index test project: {result_data.get('error')}"
         # Check that indexing was successful (various possible keys)
@@ -36,7 +35,7 @@ class TestMCPProjectStorage:
 
         # List projects
         projects_result = self.server.list_projects()
-        projects_data = json.loads(projects_result)
+        projects_data = projects_result
 
         assert "count" in projects_data, "Projects result should include count"
         assert projects_data.get("count", 0) >= 1, "Should have at least one project after indexing"
@@ -54,7 +53,7 @@ class TestMCPProjectStorage:
 
         # Search
         search_result = self.server.search_code("authentication functions", k=3)
-        search_data = json.loads(search_result)
+        search_data = search_result
 
         # Should either have results or error, but not both
         if "error" in search_data:
@@ -77,7 +76,7 @@ class TestMCPProjectStorage:
 
         # Get status
         status_result = self.server.get_index_status()
-        status_data = json.loads(status_result)
+        status_data = status_result
 
         if "error" not in status_data:
             assert "index_statistics" in status_data, "Status should include index_statistics"
@@ -91,13 +90,13 @@ class TestMCPProjectStorage:
         """Test that projects are isolated in storage."""
         # Index test project
         result1 = self.server.index_test_project()
-        result1_data = json.loads(result1)
+        result1_data = result1
 
         assert "error" not in result1_data, "First index should succeed"
 
         # Get projects list
         projects_result = self.server.list_projects()
-        projects_data = json.loads(projects_result)
+        projects_data = projects_result
 
         # Should have at least one project
         assert len(projects_data.get("projects", [])) >= 1, "Should have at least one project"

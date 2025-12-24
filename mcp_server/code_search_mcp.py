@@ -1,69 +1,40 @@
-"""Code Search MCP - FastMCP server for tool registration and management."""
+"""Legacy MCP wrapper retained for test compatibility."""
 
-import json
 import logging
-from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 
-from mcp.server.fastmcp import FastMCP
-import yaml
+try:
+    from mcp.server.fastmcp import FastMCP
+except ImportError:
+    FastMCP = None
+
+from mcp_server.mcp_tools import register_tools
 from mcp_server.code_search_server import CodeSearchServer
+from mcp_server.strings_loader import load_strings
 
-# Configure logging
 logger = logging.getLogger(__name__)
 
 
 class CodeSearchMCP(FastMCP if FastMCP else object):
-    """MCP server that manages FastMCP instance and tool registration."""
+    """Compatibility wrapper around the shared MCP tool registration."""
 
     def __init__(self, server: "CodeSearchServer"):
-        """Initialize the MCP server with a code search server instance."""
-        super().__init__("Code Search")
+        if FastMCP:
+            super().__init__("Code Search")
         self.server = server
-        self._strings = self._load_strings()
-        self._setup()
-
-    def _load_strings(self) -> dict:
-        """Load all strings (tool descriptions and help text) from strings.yaml file."""
-        strings_file = Path(__file__).parent / "strings.yaml"
-        with open(strings_file, 'r') as f:
-            data = yaml.safe_load(f)
-            assert isinstance(data, dict), "Expected a dict"
-            return {
-                "tools": data.get("tools", {}),
-                "help": data.get("help", "")
-            }
-
-    def _setup(self):
-        """Setup all MCP tools, resources, and prompts."""
-
-        # Register tools using getattr
-        for tool_name, description in self._strings["tools"].items():
-            server_method = getattr(self.server, tool_name)
-            self.tool(description=description)(server_method)
-
-        # Register resources
-        @self.resource("search://stats")
-        def get_search_statistics() -> str:
-            """Get detailed search index statistics."""
-            try:
-                index_manager = self.server.get_index_manager()
-                stats = index_manager.get_stats()
-                return json.dumps(stats, indent=2)
-            except Exception as e:
-                return json.dumps({"error": f"Failed to get statistics: {str(e)}"})
-
-        # Register prompts
-        @self.prompt()
-        def search_help() -> str:
-            """Get help on using code search tools."""
-            return self._strings["help"]
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mcp-code-search")
+        strings = load_strings()
+        register_tools(self, server, strings, self._executor)
 
     def run(self, transport: str = "stdio", host: str = "localhost", port: int = 8000):
         """Run the MCP server with specified transport."""
+        if not FastMCP:
+            logger.error("FastMCP not installed. Cannot run server.")
+            return
+
         if transport == "http":
-            transport = "sse"
+            transport = "streamable-http"
 
         if transport in ["sse", "streamable-http"]:
             logger.info(f"Starting HTTP server on {host}:{port}")
-        # FastMCP not support host and port
         return super().run(transport=transport)

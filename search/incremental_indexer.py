@@ -1,25 +1,24 @@
-"""Incremental indexing using Merkle tree change detection."""
+"""Incremental indexing logic using Merkle DAGs and change detection."""
 
 import logging
 import time
-from dataclasses import dataclass
+import fnmatch
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-
-from merkle.change_detector import ChangeDetector, FileChanges
+from typing import List, Dict, Any, Optional, Set
+from dataclasses import dataclass
 from merkle.merkle_dag import MerkleDAG
 from merkle.snapshot_manager import SnapshotManager
-from chunking.multi_language_chunker import MultiLanguageChunker
+from merkle.change_detector import FileChanges, ChangeDetector
 from embeddings.embedder import CodeEmbedder
-from search.indexer import CodeIndexManager as Indexer
+from search.indexer import CodeIndexManager
+from chunking.multi_language_chunker import MultiLanguageChunker
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class IncrementalIndexResult:
-    """Result of incremental indexing operation."""
-    
+    """Results from an incremental indexing run."""
     files_added: int
     files_removed: int
     files_modified: int
@@ -28,104 +27,66 @@ class IncrementalIndexResult:
     time_taken: float
     success: bool
     error: Optional[str] = None
-    
-    def to_dict(self) -> Dict:
-        """Convert to dictionary."""
-        return {
-            'files_added': self.files_added,
-            'files_removed': self.files_removed,
-            'files_modified': self.files_modified,
-            'chunks_added': self.chunks_added,
-            'chunks_removed': self.chunks_removed,
-            'time_taken': self.time_taken,
-            'success': self.success,
-            'error': self.error
-        }
 
 
 class IncrementalIndexer:
-    """Handles incremental indexing of code changes."""
-    DEFAULT_BATCH_SIZE = 256
-    
+    """Orchestrates incremental indexing process."""
+
     def __init__(
         self,
-        indexer: Optional[Indexer] = None,
-        embedder: Optional[CodeEmbedder] = None,
-        chunker: Optional[MultiLanguageChunker] = None,
-        snapshot_manager: Optional[SnapshotManager] = None
+        index_manager: CodeIndexManager,
+        embedder: CodeEmbedder,
+        chunker: MultiLanguageChunker,
+        storage_dir: str
     ):
-        """Initialize incremental indexer.
-        
-        Args:
-            indexer: Indexer instance
-            embedder: Embedder instance
-            chunker: Code chunker instance
-            snapshot_manager: Snapshot manager instance
-        """
-        self.indexer = indexer or Indexer()
-        self.embedder = embedder or CodeEmbedder()
-        self.chunker = chunker or MultiLanguageChunker()
-        self.snapshot_manager = snapshot_manager or SnapshotManager()
-        self.change_detector = ChangeDetector(self.snapshot_manager)
-    
-    def detect_changes(self, project_path: str) -> Tuple[FileChanges, MerkleDAG]:
-        """Detect changes in project since last snapshot.
-        
-        Args:
-            project_path: Path to project
-            
-        Returns:
-            Tuple of (FileChanges, current MerkleDAG)
-        """
-        return self.change_detector.detect_changes_from_snapshot(project_path)
-    
+        self.indexer = index_manager
+        self.embedder = embedder
+        self.chunker = chunker
+        self.snapshot_manager = SnapshotManager(storage_dir)
+        self.chunk_batch_size = 100
+        self.embed_batch_size = 32
+        self._progress_callback = None
+
     def incremental_index(
         self,
         project_path: str,
-        project_name: Optional[str] = None,
-        force_full: bool = False
+        project_name: str,
+        file_patterns: Optional[List[str]] = None,
+        force_full: bool = False,
+        progress_callback=None
     ) -> IncrementalIndexResult:
-        """Perform incremental indexing of a project.
-        
-        Args:
-            project_path: Path to project
-            project_name: Optional project name
-            force_full: Force full reindex even if snapshot exists
-            
-        Returns:
-            IncrementalIndexResult with statistics
-        """
+        """Perform incremental indexing of a project."""
+        self._progress_callback = progress_callback
         start_time = time.time()
-        project_path = str(Path(project_path).resolve())
-        
-        if not project_name:
-            project_name = Path(project_path).name
         
         try:
-            # Check if we should do full index
-            if force_full or not self.snapshot_manager.has_snapshot(project_path):
-                logger.info(f"Performing full index for {project_name}")
-                return self._full_index(project_path, project_name, start_time)
-            
+            if force_full:
+                return self._full_index(project_path, project_name, start_time, file_patterns)
+
+            # Load latest snapshot
+            latest_dag = self.snapshot_manager.load_latest_snapshot(project_path)
+            if latest_dag is None:
+                logger.info("No existing snapshot found. Performing full index.")
+                return self._full_index(project_path, project_name, start_time, file_patterns)
+
+            # Build current DAG
+            current_dag = MerkleDAG(project_path)
+            current_dag.build()
+
             # Detect changes
-            logger.info(f"Detecting changes in {project_name}")
-            changes, current_dag = self.detect_changes(project_path)
+            detector = ChangeDetector(self.snapshot_manager)
+            changes = detector.get_changes(latest_dag, current_dag)
             
+            # Apply file patterns if provided
+            if file_patterns:
+                changes = self._filter_changes(changes, file_patterns)
+
             if not changes.has_changes():
-                logger.info(f"No changes detected in {project_name}")
-                return IncrementalIndexResult(
-                    files_added=0,
-                    files_removed=0,
-                    files_modified=0,
-                    chunks_added=0,
-                    chunks_removed=0,
-                    time_taken=time.time() - start_time,
-                    success=True
-                )
-            
-            # Log changes
+                logger.info("No changes detected since last index.")
+                return IncrementalIndexResult(0, 0, 0, 0, 0, time.time() - start_time, True)
+
             logger.info(
-                f"Changes detected - Added: {len(changes.added)}, "
+                f"Incremental changes: Added: {len(changes.added)}, "
                 f"Removed: {len(changes.removed)}, Modified: {len(changes.modified)}"
             )
             
@@ -158,32 +119,40 @@ class IncrementalIndexer:
         except Exception as e:
             logger.error(f"Incremental indexing failed: {e}")
             return IncrementalIndexResult(
-                files_added=0,
-                files_removed=0,
-                files_modified=0,
-                chunks_added=0,
-                chunks_removed=0,
-                time_taken=time.time() - start_time,
-                success=False,
-                error=str(e)
+                0, 0, 0, 0, 0, time.time() - start_time, False, error=str(e)
             )
-    
+        finally:
+            self._progress_callback = None
+
+    def _filter_changes(self, changes: FileChanges, file_patterns: List[str]) -> FileChanges:
+        """Filter changes based on robust glob patterns."""
+        def matches(path: str) -> bool:
+            norm_path = path.replace('\\', '/')
+            for pattern in file_patterns:
+                norm_pattern = pattern.replace('\\', '/')
+                # 1. Direct match
+                if fnmatch.fnmatch(norm_path, norm_pattern): return True
+                # 2. Match as sub-path (unanchored)
+                if not norm_pattern.startswith('/') and not norm_pattern.startswith('./'):
+                    if fnmatch.fnmatch(norm_path, "*/" + norm_pattern): return True
+                # 3. Match on filename
+                if fnmatch.fnmatch(Path(norm_path).name, norm_pattern): return True
+            return False
+
+        return FileChanges(
+            added=[f for f in changes.added if matches(f)],
+            removed=[f for f in changes.removed if matches(f)],
+            modified=[f for f in changes.modified if matches(f)]
+        )
+
     def _full_index(
         self,
         project_path: str,
         project_name: str,
-        start_time: float
+        start_time: float,
+        file_patterns: Optional[List[str]] = None
     ) -> IncrementalIndexResult:
-        """Perform full indexing of a project.
-        
-        Args:
-            project_path: Path to project
-            project_name: Project name
-            start_time: Start time for timing
-            
-        Returns:
-            IncrementalIndexResult
-        """
+        """Perform full indexing of a project."""
         try:
             # Clear existing index
             self.indexer.clear_index()
@@ -193,14 +162,37 @@ class IncrementalIndexer:
             dag.build()
             all_files = dag.get_all_files()
             
-            # Filter supported files
-            supported_files = [f for f in all_files if self.chunker.is_supported(f)]
+            # Filter supported and patterned files
+            supported_files = []
+            for f in all_files:
+                if not self.chunker.is_supported(f):
+                    continue
+                
+                if file_patterns:
+                    norm_path = f.replace('\\', '/')
+                    match = False
+                    for pattern in file_patterns:
+                        norm_pattern = pattern.replace('\\', '/')
+                        # 1. Direct match
+                        if fnmatch.fnmatch(norm_path, norm_pattern): 
+                            match = True; break
+                        # 2. Match as sub-path (unanchored)
+                        if not norm_pattern.startswith('/') and not norm_pattern.startswith('./'):
+                            if fnmatch.fnmatch(norm_path, "*/" + norm_pattern):
+                                match = True; break
+                        # 3. Match on filename
+                        if fnmatch.fnmatch(Path(norm_path).name, norm_pattern):
+                            match = True; break
+                    if not match:
+                        continue
+                
+                supported_files.append(f)
             
             chunks_added = 0
             batch: List = []
             for chunk in self._iter_chunks(supported_files, project_path):
                 batch.append(chunk)
-                if len(batch) >= self.DEFAULT_BATCH_SIZE:
+                if len(batch) >= self.chunk_batch_size:
                     chunks_added += self._process_batch(batch, project_name)
                     batch = []
 
@@ -210,13 +202,12 @@ class IncrementalIndexer:
             # Save snapshot
             self.snapshot_manager.save_snapshot(dag, {
                 'project_name': project_name,
-                'full_index': True,
-                'total_files': len(all_files),
-                'supported_files': len(supported_files),
+                'incremental_update': False,
+                'file_count': len(supported_files),
                 'chunks_indexed': chunks_added
             })
             
-            # Save index
+            # Save index to disk
             self.indexer.save_index()
             
             return IncrementalIndexResult(
@@ -232,63 +223,52 @@ class IncrementalIndexer:
         except Exception as e:
             logger.error(f"Full indexing failed: {e}")
             return IncrementalIndexResult(
-                files_added=0,
-                files_removed=0,
-                files_modified=0,
-                chunks_added=0,
-                chunks_removed=0,
-                time_taken=time.time() - start_time,
-                success=False,
-                error=str(e)
+                0, 0, 0, 0, 0, time.time() - start_time, False, error=str(e)
             )
-    
+
+    def _iter_chunks(self, files: List[str], project_path: str):
+        """Yield chunks for each supported file."""
+        for file_path in files:
+            full_path = (Path(project_path) / file_path).resolve()
+            try:
+                chunks = self.chunker.chunk_file(str(full_path))
+                if not chunks:
+                    continue
+                for chunk in chunks:
+                    yield chunk
+            except Exception as e:
+                logger.warning(f"Failed to chunk {file_path}: {e}")
+
+    def _process_batch(self, chunks: List, project_name: str) -> int:
+        """Process a batch of chunks: embed and index."""
+        if not chunks:
+            return 0
+
+        embedding_results = self.embedder.embed_chunks(chunks, batch_size=self.embed_batch_size or 32)
+        if not embedding_results:
+            return 0
+
+        self.indexer.add_embeddings(embedding_results, update_stats=False)
+        return len(embedding_results)
+
     def _remove_old_chunks(self, changes: FileChanges, project_name: str) -> int:
-        """Remove chunks for deleted and modified files.
-        
-        Args:
-            changes: File changes
-            project_name: Project name
-            
-        Returns:
-            Number of chunks removed
-        """
-        files_to_remove = self.change_detector.get_files_to_remove(changes)
+        """Remove old chunks for modified/removed files."""
         chunks_removed = 0
-        
-        for file_path in files_to_remove:
-            # Remove from metadata
-            removed = self.indexer.remove_file_chunks(file_path, project_name)
-            chunks_removed += removed
-            logger.debug(f"Removed {removed} chunks from {file_path}")
-        
+        for file_path in changes.modified + changes.removed:
+            chunks_removed += self.indexer.remove_file_chunks(file_path)
         return chunks_removed
-    
-    def _add_new_chunks(
-        self,
-        changes: FileChanges,
-        project_path: str,
-        project_name: str
-    ) -> int:
-        """Add chunks for new and modified files.
-        
-        Args:
-            changes: File changes
-            project_path: Project root path
-            project_name: Project name
-            
-        Returns:
-            Number of chunks added
-        """
-        files_to_index = self.change_detector.get_files_to_reindex(changes)
-        
-        # Filter supported files
-        supported_files = [f for f in files_to_index if self.chunker.is_supported(f)]
-        
+
+    def _add_new_chunks(self, changes: FileChanges, project_path: str, project_name: str) -> int:
+        """Add chunks for new/modified files."""
+        files_to_process = changes.added + changes.modified
+        if not files_to_process:
+            return 0
+
         chunks_added = 0
         batch: List = []
-        for chunk in self._iter_chunks(supported_files, project_path):
+        for chunk in self._iter_chunks(files_to_process, project_path):
             batch.append(chunk)
-            if len(batch) >= self.DEFAULT_BATCH_SIZE:
+            if len(batch) >= self.chunk_batch_size:
                 chunks_added += self._process_batch(batch, project_name)
                 batch = []
 
@@ -297,100 +277,47 @@ class IncrementalIndexer:
 
         return chunks_added
 
-    def _iter_chunks(self, file_paths: List[str], project_path: str):
-        """Yield chunks for supported files."""
-        for file_path in file_paths:
-            full_path = Path(project_path) / file_path
-            try:
-                chunks = self.chunker.chunk_file(str(full_path))
-                for chunk in chunks:
-                    yield chunk
-            except Exception as e:
-                logger.warning(f"Failed to chunk {file_path}: {e}")
+    def auto_reindex_if_needed(
+        self,
+        project_path: str,
+        project_name: Optional[str] = None,
+        max_age_minutes: float = 5,
+        file_patterns: Optional[List[str]] = None
+    ) -> IncrementalIndexResult:
+        """Automatically reindex if snapshot is too old."""
+        if not project_name:
+            project_name = Path(project_path).name
 
-    def _process_batch(self, chunks: List, project_name: str) -> int:
-        """Embed and index a batch of chunks."""
-        try:
-            embedding_results = self.embedder.embed_chunks(chunks)
-            for chunk, embedding_result in zip(chunks, embedding_results):
-                embedding_result.metadata['project_name'] = project_name
-                embedding_result.metadata['content'] = chunk.content
+        if not self.needs_reindex(project_path, max_age_minutes=max_age_minutes):
+            return IncrementalIndexResult(0, 0, 0, 0, 0, 0.0, True)
 
-            if embedding_results:
-                self.indexer.add_embeddings(embedding_results)
-            return len(embedding_results)
-        except Exception as e:
-            logger.warning(f"Embedding failed: {e}")
-            return 0
-    
-    
-    def get_indexing_stats(self, project_path: str) -> Optional[Dict]:
-        """Get indexing statistics for a project.
-        
-        Args:
-            project_path: Path to project
-            
-        Returns:
-            Dictionary with statistics or None
-        """
-        metadata = self.snapshot_manager.load_metadata(project_path)
-        if not metadata:
-            return None
-        
-        # Add current index stats
-        metadata['current_chunks'] = self.indexer.get_index_size()
-        metadata['snapshot_age'] = self.snapshot_manager.get_snapshot_age(project_path)
-        
-        return metadata
-    
+        logger.info(f"Auto-reindexing {project_name}")
+        return self.incremental_index(project_path, project_name, file_patterns=file_patterns, force_full=False)
+
     def needs_reindex(self, project_path: str, max_age_minutes: float = 5) -> bool:
-        """Check if a project needs reindexing.
-        
-        Args:
-            project_path: Path to project
-            max_age_minutes: Maximum age of snapshot in minutes (default 5)
-            
-        Returns:
-            True if reindex is needed
-        """
-        # No snapshot means needs index
-        if not self.snapshot_manager.has_snapshot(project_path):
+        """Check if a project needs reindexing based on snapshot age or changes."""
+        stats = self.get_indexing_stats(project_path)
+        if not stats:
             return True
-        
-        # Check snapshot age (convert minutes to seconds)
-        age = self.snapshot_manager.get_snapshot_age(project_path)
-        if age and age > max_age_minutes * 60:
+
+        detector = ChangeDetector(self.snapshot_manager)
+        if detector.quick_check(project_path):
             return True
-        
-        # Quick check for changes
-        return self.change_detector.quick_check(project_path)
-    
-    def auto_reindex_if_needed(self, project_path: str, project_name: Optional[str] = None, 
-                              max_age_minutes: float = 5) -> IncrementalIndexResult:
-        """Automatically reindex if the index is stale.
-        
-        Args:
-            project_path: Path to project
-            project_name: Optional project name
-            max_age_minutes: Maximum age before auto-reindex (default 5 minutes)
-            
-        Returns:
-            IncrementalIndexResult with statistics
-        """
-        import time
-        start_time = time.time()
-        
-        if self.needs_reindex(project_path, max_age_minutes):
-            logger.info(f"Auto-reindexing {project_path} (index older than {max_age_minutes} minutes)")
-            return self.incremental_index(project_path, project_name)
-        else:
-            logger.debug(f"Index for {project_path} is fresh, skipping reindex")
-            return IncrementalIndexResult(
-                files_added=0,
-                files_removed=0,
-                files_modified=0,
-                chunks_added=0,
-                chunks_removed=0,
-                time_taken=time.time() - start_time,
-                success=True
-            )
+
+        age_seconds = stats.get('snapshot_age', float('inf'))
+        return age_seconds > max_age_minutes * 60
+
+    def get_indexing_stats(self, project_path: str) -> Dict[str, Any]:
+        """Get indexing statistics for a project."""
+        metadata = self.snapshot_manager.load_metadata(project_path)
+        if metadata is None:
+            return None
+        try:
+            index_stats = self.indexer.get_stats()
+            metadata["current_chunks"] = index_stats.get("total_chunks", 0)
+        except Exception:
+            metadata.setdefault("current_chunks", 0)
+        snapshot_age = self.snapshot_manager.get_snapshot_age(project_path)
+        if snapshot_age is not None:
+            metadata["snapshot_age"] = snapshot_age
+        return metadata

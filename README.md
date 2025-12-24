@@ -24,14 +24,14 @@
 
 [![Seeking Remote Work](https://img.shields.io/badge/🌍-Actively%20Seeking%20Remote%20Work-success?style=for-the-badge)](mailto:farhanalirazaazeemi@gmail.com)
 
-Claude Context without the cloud. Semantic code search that runs 100% locally using EmbeddingGemma. No API keys, no costs, your code never leaves your machine.
+Codex Context without the cloud. Semantic code search that runs 100% locally using EmbeddingGemma. No API keys, no costs, your code never leaves your machine.
 
 - 🔍 **Find code by meaning, not strings**
 - 🔒 **100% local - completely private**
 - 💰 **Zero API costs - forever free**
-- ⚡ **Fewer tokens in Claude Code and fast local searches**
+- ⚡ **Fewer tokens in Codex and fast local searches**
 
-An intelligent code search system that uses Google's EmbeddingGemma model and advanced multi-language chunking to provide semantic search capabilities across 15 file extensions and 9+ programming languages, integrated with Claude Code via MCP (Model Context Protocol).
+An intelligent code search system that uses Google's EmbeddingGemma model and advanced multi-language chunking to provide semantic search capabilities across 15 file extensions and 9+ programming languages, integrated with Codex via MCP (Model Context Protocol).
 
 ## 🚧 Beta Release
 
@@ -50,17 +50,17 @@ An intelligent code search system that uses Google's EmbeddingGemma model and ad
 - **Intelligent chunking**: AST-based (Python) + tree-sitter (JS/TS/Go/Java/Rust/C/C++/C#)
 - **Semantic search**: Natural language queries to find code across all languages
 - **Rich metadata**: File paths, folder structure, semantic tags, language-specific info
-- **MCP integration**: Direct integration with Claude Code
+- **MCP integration**: Direct integration with Codex
 - **Local processing**: All embeddings stored locally, no API calls
 - **Fast search**: FAISS for efficient similarity search
 
 ## Why this
 
-Claude’s code context is powerful, but sending your code to the cloud costs tokens and raises privacy concerns. This project keeps semantic code search entirely on your machine. It integrates with Claude Code via MCP, so you keep the same workflow—just faster, cheaper, and private.
+Codex’s code context is powerful, but sending your code to the cloud costs tokens and raises privacy concerns. This project keeps semantic code search entirely on your machine. It integrates with Codex via MCP, so you keep the same workflow—just faster, cheaper, and private.
 
 ## Requirements
 
-- Python 3.12+
+- Python 3.13+ (Required for macOS ARM support)
 - Disk: 1–2 GB free (model + caches + index)
 - Optional: NVIDIA GPU (CUDA 11/12) for FAISS acceleration; Apple Silicon (MPS) for embedding acceleration. These also speed up running the embedding model with SentenceTransformer, but everything still works on CPU.
 
@@ -107,18 +107,29 @@ The installer will:
 ### 1) Register the MCP server (stdio)
 
 ```bash
-claude mcp add code-search --scope user -- uv run --directory ~/.local/share/claude-context-local python mcp_server/server.py
+codex mcp add claude_context_local --scope user -- uv run --directory ~/.local/share/claude-context-local python mcp_server/server.py --transport stdio
 ```
 
-Then open Claude Code; the server will run in stdio mode inside the `uv` environment.
+Then open Codex; the server will run in stdio mode inside the `uv` environment.
 
 ### 2) Index your codebase
 
-Open Claude Code and say: index this codebase. No manual commands needed.
+Open Codex and say: index this codebase. No manual commands needed.
 
-### 3) Use in Claude Code
+### 3) Use in Codex
 
-Interact via chat inside Claude Code; no function calls or commands are required.
+## Configuration
+
+Environment variables (set in your MCP server config):
+
+- `CODE_SEARCH_STORAGE` (default: `~/.claude_code_search`)
+- `CODE_SEARCH_DEVICE` (`cpu`, `mps`, `cuda`)
+- `CODE_SEARCH_PRELOAD_MODEL` (`0`/`1`)
+- `CODE_SEARCH_CHUNK_BATCH_SIZE` (chunking batch size)
+- `CODE_SEARCH_EMBED_BATCH_SIZE` (embedding batch size)
+- `CODE_SEARCH_INCLUDE_CONTEXT` (`0`/`1`)
+
+Interact via chat inside Codex; no function calls or commands are required.
 
 ## Architecture
 
@@ -139,7 +150,7 @@ claude-context-local/
 │   ├── change_detector.py            # Diffs snapshots to find changed files
 │   └── snapshot_manager.py           # Snapshot persistence & stats
 ├── mcp_server/
-│   └── server.py                     # MCP tools for Claude Code (stdio/HTTP)
+│   └── server.py                     # MCP tools for Codex (stdio/HTTP)
 └── scripts/
     ├── install.sh                    # One-liner remote installer (uv + model + faiss)
     ├── download_model_standalone.py  # Pre-fetch embedding model
@@ -150,7 +161,7 @@ claude-context-local/
 
 ```mermaid
 graph TD
-    A["Claude Code (MCP client)"] -->|index_directory| B["MCP Server"]
+    A["Codex (MCP client)"] -->|index_directory| B["MCP Server"]
     B --> C{IncrementalIndexer}
     C --> D["ChangeDetector<br/>(Merkle DAG)"]
     C --> E["MultiLanguageChunker"]
@@ -197,6 +208,9 @@ The system uses advanced parsing to create semantically meaningful chunks across
 ### Environment Variables
 
 - `CODE_SEARCH_STORAGE`: Custom storage directory (default: `~/.claude_code_search`)
+- `CODE_SEARCH_CHUNK_BATCH_SIZE`: Chunk batch size for indexing (default: 256)
+- `CODE_SEARCH_EMBED_BATCH_SIZE`: Embed batch size for model inference (falls back to `CODE_SEARCH_BATCH_SIZE`)
+- `CODE_SEARCH_TORCH_BEFORE_FAISS`: Force torch import before FAISS on startup (`true`/`false`)
 
 ### Model Configuration
 

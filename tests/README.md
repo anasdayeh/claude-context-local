@@ -1,6 +1,6 @@
 # Test Suite Documentation
 
-This directory contains comprehensive tests for the Claude Code Embedding Search system.
+This directory contains comprehensive tests for the Codex Embedding Search system.
 
 ## Test Structure
 

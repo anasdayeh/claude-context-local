@@ -2,8 +2,6 @@
 
 import os
 import logging
-import json
-import hashlib
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -21,8 +19,7 @@ class CodeSearchServer:
 
     def __init__(self):
         self.storage_root = get_storage_dir()
-        # Default embedder uses local models/ directory if configured in CodeSearchServer init
-        self.embedder = CodeEmbedder(cache_dir=str(self.storage_root / "models"))
+        self.embedder = CodeEmbedder()
         self.chunker = MultiLanguageChunker()
         self._current_project = None
         self._index_manager = None
@@ -30,13 +27,14 @@ class CodeSearchServer:
 
     def get_project_storage_dir(self, directory_path: str) -> Path:
         """Get unique storage directory for a project path."""
+        import hashlib
         path_hash = hashlib.md5(str(Path(directory_path).resolve()).encode()).hexdigest()
         project_dir = self.storage_root / "projects" / path_hash
         project_dir.mkdir(parents=True, exist_ok=True)
         return project_dir
 
     def ensure_project_indexed(self, directory_path: str, project_name: str = None) -> bool:
-        """Check if a project is already indexed and usable."""
+        """Check if a project is already indexed."""
         project_dir = self.get_project_storage_dir(directory_path)
         index_dir = project_dir / "index"
         
@@ -44,12 +42,11 @@ class CodeSearchServer:
         stats_path = index_dir / "stats.json"
         if stats_path.exists():
             try:
+                import json
                 with open(stats_path, "r") as f:
                     stats = json.load(f)
                     if stats.get("total_chunks", 0) > 0:
-                        # Also check if the FAISS index exists
-                        if (index_dir / "code.index").exists():
-                             return True
+                        return True
             except Exception:
                 pass
         return False
@@ -124,31 +121,16 @@ class CodeSearchServer:
     def search_code(
         self,
         query: str,
-        k: int = 5,
-        search_mode: str = "auto",
+        project_path: str = None,
         file_pattern: str = None,
-        chunk_type: str = None,
-        include_context: bool = True,
-        auto_reindex: bool = False,
-        max_age_minutes: float = 5,
-        project_path: str = None, # Added to support both tool styles
+        k: int = 5,
+        include_context: bool = False,
     ) -> List[Dict[str, Any]]:
         """Implementation of search_code tool."""
         if project_path:
             switch_res = self.switch_project(project_path)
             if "error" in switch_res:
-                # If project not switched, but we have a current one, we might continue
-                # but it's safer to return the error
                 return [switch_res]
-        
-        if not self._searcher:
-            # Try to auto-switch to the last used project or any project
-            if self._current_project:
-                self.switch_project(self._current_project)
-            else:
-                projects = self.list_projects()
-                if projects:
-                   self.switch_project(projects[0]["project_path"])
         
         if not self._searcher:
             return [{"error": "No project selected. Provide project_path or run index_directory first."}]
@@ -160,35 +142,23 @@ class CodeSearchServer:
             
             filters = {}
             if file_pattern:
-                # Support both single string and list if needed by internal searcher
-                filters['file_pattern'] = [file_pattern] if isinstance(file_pattern, str) else file_pattern
-            if chunk_type:
-                filters['chunk_type'] = chunk_type
+                filters['file_pattern'] = [file_pattern]
                 
-            results = self._searcher.search(
-                query, 
-                k=k, 
-                filters=filters, 
-                context_depth=context_depth,
-                search_mode="semantic" if search_mode == "auto" else search_mode
-            )
+            results = self._searcher.search(query, k=k, filters=filters, context_depth=context_depth)
             
-            # Map search results to the format expected by the MCP tool
-            return [res.to_search_tool_dict() for res in results]
+            formatted_results = []
+            for res in results:
+                formatted_results.append({
+                    "file": res.relative_path,
+                    "type": res.chunk_type,
+                    "name": res.name,
+                    "lines": f"{res.start_line}-{res.end_line}",
+                    "content": res.content_preview,
+                    "score": round(res.similarity_score, 3)
+                })
+            return formatted_results
         except Exception as e:
             logger.error(f"Search failed: {e}")
-            return [{"error": str(e)}]
-
-    def find_similar_code(self, chunk_id: str, k: int = 5) -> List[Dict[str, Any]]:
-        """Find chunks functionally similar to a given chunk."""
-        if not self._searcher:
-            return [{"error": "No project selected."}]
-        
-        try:
-            results = self._searcher.find_similar_to_chunk(chunk_id, k=k)
-            return [res.to_similar_tool_dict() for res in results]
-        except Exception as e:
-            logger.error(f"Similar search failed: {e}")
             return [{"error": str(e)}]
 
     def get_stats(self, project_path: str = None) -> Dict[str, Any]:
@@ -215,13 +185,6 @@ class CodeSearchServer:
         
         return stats
 
-    def get_index_status(self) -> Dict[str, Any]:
-        """Alias for get_stats with additional model info."""
-        stats = self.get_stats()
-        if "error" not in stats:
-            stats["model_info"] = self.embedder.get_model_info()
-        return stats
-
     def list_projects(self) -> List[Dict[str, Any]]:
         """List all indexed projects."""
         projects_dir = self.storage_root / "projects"
@@ -233,47 +196,27 @@ class CodeSearchServer:
             if not p_dir.is_dir():
                 continue
             
-            index_dir = p_dir / "index"
-            stats_path = index_dir / "stats.json"
-            if stats_path.exists():
-                try:
+            # Attempt to find project path from metadata/snapshots
+            try:
+                # We could store a metadata.json in project_dir for easier listing
+                # For now, just return directory names and check stats
+                stats_path = p_dir / "index" / "stats.json"
+                if stats_path.exists():
+                    import json
                     with open(stats_path, "r") as f:
-                        s = json.load(f)
+                        meta = json.load(f)
                         projects.append({
-                            "project_id": p_dir.name,
-                            "project_name": s.get("project_name", p_dir.name),
-                            "project_path": s.get("project_path", "unknown"),
-                            "total_chunks": s.get("total_chunks", 0),
-                            "last_indexed": s.get("last_indexed", "unknown")
+                            "id": p_dir.name,
+                            "last_updated": meta.get("last_updated"),
+                            "chunks": meta.get("total_chunks", 0)
                         })
-                except Exception:
-                    pass
-        return sorted(projects, key=lambda x: x.get("last_indexed", ""), reverse=True)
+            except Exception:
+                pass
+        return projects
 
-    def clear_index(self, project_path: str = None) -> Dict[str, Any]:
-        """Clear the search index for a project."""
-        target_path = project_path or self._current_project
-        if not target_path:
-            return {"error": "No project selected."}
-        
-        project_dir = self.get_project_storage_dir(target_path)
-        index_dir = project_dir / "index"
-        
+    def _maybe_start_model_preload(self):
+        """Preload the embedding model in background if requested."""
         try:
-            index_manager = CodeIndexManager(str(index_dir))
-            index_manager.clear_index()
-            return {"success": True, "message": f"Index cleared for {target_path}"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    def index_test_project(self) -> Dict[str, Any]:
-        """Index a small test dataset for verification."""
-        import tempfile
-        with tempfile.TemporaryDirectory() as temp_dir:
-            test_path = Path(temp_dir) / "sample"
-            test_path.mkdir()
-            (test_path / "main.py").write_text("def hello():\n    print('hello world')\n")
-            (test_path / "utils.py").write_text("def add(a, b):\n    return a + b\n")
-            
-            return self.index_directory(str(test_path), project_name="test_project")
-
+            self.embedder.model
+        except Exception:
+            pass
