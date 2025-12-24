@@ -9,12 +9,14 @@ class GemmaEmbeddingModel(SentenceTransformerModel):
 
     def __init__(
         self,
+        model_name: str = "google/embeddinggemma-300m",
         cache_dir: Optional[str] = None,
         device: str = "auto"
     ):
         """Initialize GemmaEmbeddingModel.
 
         Args:
+            model_name: Expected model name (ignored, enforced by this class)
             cache_dir: Directory to cache the model
             device: Device to load model on ("auto", "cuda", "mps", "cpu")
         """

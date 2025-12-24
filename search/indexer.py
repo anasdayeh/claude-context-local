@@ -6,15 +6,25 @@ import logging
 import hashlib
 import sqlite3
 import time
+import fnmatch
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
-from dataclasses import asdict
 import numpy as np
-import torch
 import faiss
 from sqlitedict import SqliteDict
 from embeddings.embedder import EmbeddingResult
 from chunking.code_chunk import CodeChunk
+
+# Reduce OpenMP/BLAS thread contention for stability.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+try:
+    faiss.omp_set_num_threads(1)
+except Exception:
+    pass
 
 
 class CodeIndexManager:
@@ -65,7 +75,8 @@ class CodeIndexManager:
             return SqliteDict(
                 str(path),
                 autocommit=False,
-                journal_mode="WAL"
+                journal_mode="WAL",
+                outer_stack=True,
             )
 
         try:
@@ -138,67 +149,49 @@ class CodeIndexManager:
             # Create a new index - we'll initialize it when we get the first embedding
             self._index = None
             # id maps are stored in sqlite
-    
+
+    def is_legacy_index(self) -> bool:
+        """Check whether the current index is legacy (no IDMap2 wrapper)."""
+        if self.index is None:
+            return False
+        return not isinstance(self.index, faiss.IndexIDMap2)
+
     def create_index(self, embedding_dimension: int, index_type: str = "flat"):
-        """Create a new FAISS index."""
+        """Create a new FAISS index with ID mapping."""
         if index_type == "flat":
-            # Simple flat index for exact search
-            base_index = faiss.IndexFlatIP(embedding_dimension)  # Inner product (cosine similarity)
+            base_index = faiss.IndexFlatIP(embedding_dimension)
             self._index = faiss.IndexIDMap2(base_index)
         elif index_type == "ivf":
-            # IVF index for faster approximate search on large datasets
             quantizer = faiss.IndexFlatIP(embedding_dimension)
-            n_centroids = min(100, max(10, embedding_dimension // 8))  # Adaptive number of centroids
+            n_centroids = min(100, max(10, embedding_dimension // 8))
             base_index = faiss.IndexIVFFlat(quantizer, embedding_dimension, n_centroids)
             self._index = faiss.IndexIDMap2(base_index)
         else:
             raise ValueError(f"Unsupported index type: {index_type}")
-        
-        self._logger.info(f"Created {index_type} index with IDMap2, dimension {embedding_dimension}")
+
+        self._logger.info(f"Created {index_type} index with IDMap2")
         self._maybe_move_index_to_gpu()
-    
-    def add_embeddings(self, embedding_results: List[EmbeddingResult]) -> None:
-        """Add embeddings to the index and metadata to the database."""
+
+    def add_embeddings(self, embedding_results: List[EmbeddingResult], update_stats: bool = True) -> None:
+        """Add embeddings to the index."""
         if not embedding_results:
             return
 
-        if self._index is not None and not isinstance(self._index, faiss.IndexIDMap2):
-            raise RuntimeError(
-                "Cannot add embeddings to legacy FAISS index without ID mapping. "
-                "Please reindex this project to migrate."
-            )
-        
         # Initialize index if needed
         if self._index is None:
-            embedding_dim = embedding_results[0].embedding.shape[0]
-            # Default to flat index for better recall - only use IVF for very large datasets
-            index_type = "ivf" if len(embedding_results) > 10000 else "flat"
-            self.create_index(embedding_dim, index_type)
-        
-        # Prepare embeddings and metadata
-        embeddings = np.asarray([result.embedding for result in embedding_results], dtype=np.float32)
-        
-        # Normalize embeddings for cosine similarity
+            embedding_dim = len(embedding_results[0].embedding)
+            self.create_index(embedding_dim, "flat")
+
+        embeddings = np.array([r.embedding for r in embedding_results], dtype=np.float32)
         faiss.normalize_L2(embeddings)
-        
-        # Train IVF index if needed
-        if hasattr(self._index, 'is_trained') and not self._index.is_trained:
-            self._logger.info("Training IVF index...")
-            self._index.train(embeddings)
-        
-        # Generate stable integer IDs
+
         ids = np.array([self._get_or_create_int_id(r.chunk_id) for r in embedding_results], dtype=np.int64)
 
-        # Remove existing IDs to prevent duplicates
-        existing_ids = []
-        for int_id in ids:
-            if str(int(int_id)) in self.metadata_db:
-                existing_ids.append(int(int_id))
-        if existing_ids:
-            try:
-                self._index.remove_ids(np.asarray(existing_ids, dtype=np.int64))
-            except Exception as e:
-                self._logger.warning(f"Failed to remove existing IDs before re-add: {e}")
+        # Remove existing IDs to avoid duplicates
+        try:
+            self._index.remove_ids(ids)
+        except Exception as e:
+            self._logger.warning(f"Failed to remove existing IDs before re-add: {e}")
 
         # Add to FAISS index with explicit IDs
         self._index.add_with_ids(embeddings, ids)
@@ -222,7 +215,8 @@ class CodeIndexManager:
             pass
         
         # Update statistics
-        self._update_stats()
+        if update_stats:
+            self._update_stats()
 
     def _gpu_is_available(self) -> bool:
         """Check if GPU FAISS support is available and GPUs are present."""
@@ -300,311 +294,215 @@ class CodeIndexManager:
         k: int = 5,
         filters: Optional[Dict[str, Any]] = None
     ) -> List[Tuple[str, float, Dict[str, Any]]]:
-        """Search for similar code chunks."""
-        import logging
-        logger = logging.getLogger(__name__)
-        
-        logger.info(f"Index manager search called with k={k}, filters={filters}")
-        
-        # Use property to trigger lazy loading
-        index = self.index
-        if index is None or index.ntotal == 0:
-            logger.warning(f"Index is empty or None. Index: {index}, ntotal: {index.ntotal if index else 'N/A'}")
+        """Search for similar embeddings."""
+        if self.index is None or self.index.ntotal == 0:
             return []
-        
-        logger.info(f"Index has {index.ntotal} total vectors")
-        
-        # Normalize query embedding
-        query_embedding = np.asarray(query_embedding, dtype=np.float32).reshape(1, -1)
+
+        # Ensure query is normalized for cosine similarity
+        query_embedding = np.array(query_embedding, dtype=np.float32)
+        if query_embedding.ndim == 1:
+            query_embedding = query_embedding.reshape(1, -1)
         faiss.normalize_L2(query_embedding)
-        
-        # Search in FAISS index
-        search_k = min(k * 3, index.ntotal)  # Get more results for filtering
-        similarities, indices = index.search(query_embedding, search_k)
-        
+
+        # Search the index (widen if filtering)
+        search_k = k
+        if filters:
+            # Arbitrary expansion to give room for filtering
+            search_k = min(max(k * 20, k + 50), self.index.ntotal)
+        distances, indices = self.index.search(query_embedding, search_k)
+
         results = []
-        for i, (similarity, int_id) in enumerate(zip(similarities[0], indices[0])):
-            if int_id == -1:  # No more results
-                break
-
-            metadata_entry = None
-            chunk_id = None
-
-            if isinstance(self._index, faiss.IndexIDMap2):
-                metadata_entry = self.metadata_db.get(str(int(int_id)))
-                if metadata_entry is None:
-                    continue
-                metadata = metadata_entry['metadata']
-                chunk_id = metadata_entry.get('chunk_id')
-            else:
-                if self._legacy_index_map is None:
-                    self._build_legacy_index_map()
-                if not self._legacy_index_map:
-                    continue
-                legacy_chunk_id = self._legacy_index_map.get(int(int_id))
-                if not legacy_chunk_id:
-                    continue
-                metadata_entry = self.metadata_db.get(legacy_chunk_id)
-                if metadata_entry is None:
-                    continue
-                metadata = metadata_entry['metadata']
-                chunk_id = legacy_chunk_id
-            
-            # Apply filters
-            if filters and not self._matches_filters(metadata, filters):
+        for idx, dist in zip(indices[0], distances[0]):
+            if idx == -1:
                 continue
-            
-            if chunk_id:
-                results.append((chunk_id, float(similarity), metadata))
-            
-            if len(results) >= k:
-                break
-        
-        return results
-    
-    def _matches_filters(self, metadata: Dict[str, Any], filters: Dict[str, Any]) -> bool:
-        """Check if metadata matches the provided filters."""
-        for key, value in filters.items():
-            if key == 'file_pattern':
-                # Pattern matching for file paths
-                if not any(pattern in metadata.get('relative_path', '') for pattern in value):
-                    return False
-            elif key == 'chunk_type':
-                # Exact match for chunk type
-                if metadata.get('chunk_type') != value:
-                    return False
-            elif key == 'tags':
-                # Tag intersection
-                chunk_tags = set(metadata.get('tags', []))
-                required_tags = set(value if isinstance(value, list) else [value])
-                if not required_tags.intersection(chunk_tags):
-                    return False
-            elif key == 'folder_structure':
-                # Check if any of the required folders are in the path
-                chunk_folders = set(metadata.get('folder_structure', []))
-                required_folders = set(value if isinstance(value, list) else [value])
-                if not required_folders.intersection(chunk_folders):
-                    return False
-            elif key in metadata:
-                # Direct metadata comparison
-                if metadata[key] != value:
-                    return False
-        
-        return True
-    
-    def get_chunk_by_id(self, chunk_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieve chunk metadata by ID."""
-        int_id = self._lookup_int_id(chunk_id)
-        if int_id is None:
-            # Legacy lookup
-            metadata_entry = self.metadata_db.get(chunk_id)
-            return metadata_entry['metadata'] if metadata_entry else None
-        metadata_entry = self.metadata_db.get(str(int_id))
-        return metadata_entry['metadata'] if metadata_entry else None
-    
-    def get_similar_chunks(self, chunk_id: str, k: int = 5) -> List[Tuple[str, float, Dict[str, Any]]]:
-        """Find chunks similar to a given chunk."""
-        int_id = self._lookup_int_id(chunk_id)
-        if int_id is None:
-            # Legacy mapping: use index_id from metadata entry if present
-            legacy_entry = self.metadata_db.get(chunk_id)
-            if not legacy_entry:
-                return []
-            legacy_index_id = legacy_entry.get("index_id")
-            if legacy_index_id is None:
-                return []
-            int_id = legacy_index_id
-
-        if self._index is None or self._index.ntotal == 0:
-            return []
-
-        # Get the embedding for this chunk
-        try:
-            embedding = self._index.reconstruct(int_id)
-        except Exception:
-            return []
-        
-        # Search for similar chunks (excluding the original)
-        results = self.search(embedding, k + 1)
-        
-        # Filter out the original chunk
-        return [(cid, sim, meta) for cid, sim, meta in results if cid != chunk_id][:k]
-    
-    def remove_file_chunks(self, file_path: str, project_name: Optional[str] = None) -> int:
-        """Remove all chunks from a specific file.
-        
-        Args:
-            file_path: Path to the file (relative or absolute)
-            project_name: Optional project name filter
-            
-        Returns:
-            Number of chunks removed
-        """
-        ids_to_remove: List[int] = []
-        
-        # Find chunks to remove
-        for int_id_str, metadata_entry in self.metadata_db.items():
-            metadata = metadata_entry['metadata']
-            
-            # Check if this chunk belongs to the file
-            chunk_file = metadata.get('file_path') or metadata.get('relative_path')
-            if not chunk_file:
-                continue
-            
-            # Check if paths match (handle both relative and absolute)
-            if file_path in chunk_file or chunk_file in file_path:
-                # Check project name if provided
-                if project_name and metadata.get('project_name') != project_name:
-                    continue
-                ids_to_remove.append(int(int_id_str))
-        
-        if not ids_to_remove:
-            return 0
-
-        # Remove from FAISS index
-        if self._index is not None:
-            try:
-                self._index.remove_ids(np.asarray(ids_to_remove, dtype=np.int64))
-            except Exception as e:
-                self._logger.warning(f"Failed to remove IDs from FAISS: {e}")
-
-        # Remove chunks from metadata and id map
-        for int_id in ids_to_remove:
+            int_id = int(idx)
             metadata_entry = self.metadata_db.get(str(int_id))
-            if metadata_entry:
-                chunk_id = metadata_entry.get("chunk_id")
-                if chunk_id in self.id_map_db:
-                    del self.id_map_db[chunk_id]
-            if str(int_id) in self.metadata_db:
-                del self.metadata_db[str(int_id)]
-        
-        self._logger.info(f"Removed {len(ids_to_remove)} chunks from {file_path}")
-        
-        # Commit removals in batch
-        try:
-            self.metadata_db.commit()
-            self.id_map_db.commit()
-        except Exception:
-            pass
-        return len(ids_to_remove)
-    
-    def save_index(self):
-        """Save the FAISS index to disk."""
-        if self._index is not None:
-            try:
-                # If on GPU, convert to CPU before saving
-                index_to_write = self._index
-                if self._on_gpu and hasattr(faiss, 'index_gpu_to_cpu'):
-                    index_to_write = faiss.index_gpu_to_cpu(self._index)
-                faiss.write_index(index_to_write, str(self.index_path))
-                self._logger.info(f"Saved index to {self.index_path}")
-            except Exception as e:
-                self._logger.warning(f"Failed to save GPU index directly, attempting CPU fallback: {e}")
-                try:
-                    cpu_index = faiss.index_gpu_to_cpu(self._index)
-                    faiss.write_index(cpu_index, str(self.index_path))
-                    self._logger.info(f"Saved index to {self.index_path} (CPU fallback)")
-                except Exception as e2:
-                    self._logger.error(f"Failed to save FAISS index: {e2}")
-        
-        self._update_stats()
-    
-    def _update_stats(self):
-        """Update index statistics."""
-        total_chunks = len(self.metadata_db)
-        stats = {
-            'total_chunks': total_chunks,
-            'index_size': self._index.ntotal if self._index else 0,
-            'embedding_dimension': self._index.d if self._index else 0,
-            'index_type': type(self._index).__name__ if self._index else 'None'
-        }
-        
-        # Add file and folder statistics
-        file_counts = {}
-        folder_counts = {}
-        chunk_type_counts = {}
-        tag_counts = {}
-        
-        for _, metadata_entry in self.metadata_db.items():
-            metadata = metadata_entry['metadata']
+            if not metadata_entry:
+                if self._legacy_index_map:
+                    legacy_chunk_id = self._legacy_index_map.get(int_id)
+                    if legacy_chunk_id:
+                        legacy_entry = self.metadata_db.get(legacy_chunk_id)
+                        if legacy_entry:
+                            results.append((legacy_chunk_id, float(dist), legacy_entry.get("metadata", {})))
+                continue
+
+            chunk_id = metadata_entry.get("chunk_id")
+            metadata = metadata_entry.get("metadata", {})
+            if not chunk_id:
+                continue
+
+            results.append((chunk_id, float(dist), metadata))
+
+        # Apply filters if needed
+        if filters:
+            results = self._apply_filters(results, filters)
+            results = results[:k]
+
+        return results
+
+    def _apply_filters(
+        self,
+        results: List[Tuple[str, float, Dict[str, Any]]],
+        filters: Dict[str, Any]
+    ) -> List[Tuple[str, float, Dict[str, Any]]]:
+        """Apply filters to search results with robust glob support."""
+        filtered = []
+        file_patterns = filters.get('file_pattern')
+        if isinstance(file_patterns, str):
+            file_patterns = [file_patterns]
             
-            # Count by file
-            file_path = metadata.get('relative_path', 'unknown')
-            file_counts[file_path] = file_counts.get(file_path, 0) + 1
+        chunk_type = filters.get('chunk_type')
+        tags = filters.get('tags')
+
+        for chunk_id, similarity, metadata in results:
+            # File pattern filtering (supports globs)
+            if file_patterns:
+                path = metadata.get('relative_path') or metadata.get('file_path')
+                if not path:
+                    continue
+                
+                # Normalize path for matching (standardize separators)
+                norm_path = path.replace('\\', '/')
+                
+                match = False
+                for pattern in file_patterns:
+                    # Normalize pattern
+                    norm_pattern = pattern.replace('\\', '/')
+                    # 1. Direct match
+                    if fnmatch.fnmatch(norm_path, norm_pattern): 
+                        match = True; break
+                    # 2. Match as sub-path (unanchored)
+                    if not norm_pattern.startswith('/') and not norm_pattern.startswith('./'):
+                        if fnmatch.fnmatch(norm_path, "*/" + norm_pattern):
+                            match = True; break
+                    # 3. Match on filename
+                    if fnmatch.fnmatch(Path(norm_path).name, norm_pattern):
+                        match = True; break
+                if not match:
+                    continue
             
-            # Count by folder
-            for folder in metadata.get('folder_structure', []):
-                folder_counts[folder] = folder_counts.get(folder, 0) + 1
+            # Chunk type filtering
+            if chunk_type and metadata.get('chunk_type') != chunk_type:
+                continue
             
-            # Count by chunk type
-            chunk_type = metadata.get('chunk_type', 'unknown')
-            chunk_type_counts[chunk_type] = chunk_type_counts.get(chunk_type, 0) + 1
-            
-            # Count by tags
-            for tag in metadata.get('tags', []):
-                tag_counts[tag] = tag_counts.get(tag, 0) + 1
-        
-        stats.update({
-            'files_indexed': len(file_counts),
-            'top_folders': dict(sorted(folder_counts.items(), key=lambda x: x[1], reverse=True)[:10]),
-            'chunk_types': chunk_type_counts,
-            'top_tags': dict(sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)[:20])
-        })
-        
-        # Save stats
-        with open(self.stats_path, 'w') as f:
-            json.dump(stats, f, indent=2)
-    
+            # Tags filtering
+            if tags:
+                metadata_tags = metadata.get('tags') or []
+                if not any(tag in metadata_tags for tag in tags):
+                    continue
+                    
+            filtered.append((chunk_id, similarity, metadata))
+
+        return filtered
+
     def get_stats(self) -> Dict[str, Any]:
-        """Get index statistics."""
-        # Ensure index is loaded so ntotal and dimension are accurate
-        _ = self.index
+        """Get indexing statistics."""
         if self.stats_path.exists():
-            with open(self.stats_path, 'r') as f:
-                return json.load(f)
-        if len(self.metadata_db) > 0:
-            self._update_stats()
-            if self.stats_path.exists():
+            try:
                 with open(self.stats_path, 'r') as f:
                     return json.load(f)
+            except Exception:
+                pass
+        
         return {
-            'total_chunks': 0,
-            'index_size': 0,
-            'embedding_dimension': 0,
-            'files_indexed': 0
+            'total_chunks': self.index.ntotal if self.index else 0,
+            'storage_size': self.index_path.stat().st_size if self.index_path.exists() else 0
         }
-    
-    def get_index_size(self) -> int:
-        """Get the number of chunks in the index."""
-        return len(self.metadata_db)
-    
-    def clear_index(self):
-        """Clear the entire index and metadata."""
-        # Close database connection
-        if self._metadata_db is not None:
-            self._metadata_db.close()
-            self._metadata_db = None
+
+    def _update_stats(self) -> None:
+        """Recalculate and save index statistics."""
+        stats = {
+            'total_chunks': self.index.ntotal if self.index else 0,
+            'last_updated': time.time()
+        }
+        try:
+            with open(self.stats_path, 'w') as f:
+                json.dump(stats, f)
+        except Exception as e:
+            self._logger.error(f"Failed to update stats: {e}")
+
+    def save_index(self) -> None:
+        """Save index and metadata to disk."""
+        if self._index:
+            # Ensure we save the CPU version if it's on GPU
+            index_to_save = self._index
+            if self._on_gpu:
+                index_to_save = faiss.index_gpu_to_cpu(self._index)
+            faiss.write_index(index_to_save, str(self.index_path))
         
-        # Remove files
-        legacy_chunk_ids = self.storage_dir / "chunk_ids.pkl"
-        for file_path in [self.index_path, self.metadata_path, self.id_map_path, self.stats_path, legacy_chunk_ids]:
-            if file_path.exists():
-                file_path.unlink()
+        if self._metadata_db:
+            self._metadata_db.commit()
         
-        # Reset in-memory state
+        if self._id_map_db:
+            self._id_map_db.commit()
+            
+        self._update_stats()
+
+    def clear_index(self) -> None:
+        """Completely clear the index and all metadata."""
         self._index = None
-        if self._metadata_db is not None:
+        self._on_gpu = False
+        self._legacy_index_map = None
+        
+        if self._metadata_db:
             self._metadata_db.close()
             self._metadata_db = None
-        if self._id_map_db is not None:
+            
+        if self._id_map_db:
             self._id_map_db.close()
             self._id_map_db = None
+            
+        for p in [self.index_path, self.metadata_path, self.id_map_path, self.stats_path]:
+            if p.exists():
+                p.unlink()
+            # Also cleanup WAL/SHM
+            for suffix in ("-wal", "-shm"):
+                aux = Path(f"{p}{suffix}")
+                if aux.exists():
+                    aux.unlink()
+
+    def get_chunk_by_id(self, chunk_id: str) -> Optional[Dict[str, Any]]:
+        """Optimized metadata retrieval by chunk_id."""
+        int_id = self._lookup_int_id(chunk_id)
+        if int_id is None:
+            return None
         
-        self._logger.info("Index cleared")
-    
-    def __del__(self):
-        """Cleanup when object is destroyed."""
-        if self._metadata_db is not None:
-            self._metadata_db.close()
-        if self._id_map_db is not None:
-            self._id_map_db.close()
+        entry = self.metadata_db.get(str(int_id))
+        if entry:
+            return entry.get("metadata")
+        return None
+
+    def remove_file_chunks(self, file_path: str) -> int:
+        """Remove all chunks associated with a file path."""
+        if not self.index:
+            return 0
+            
+        ids_to_remove = []
+        # This is a linear scan of metadata - okay for small/medium repos.
+        # For very large ones, we'd need a secondary index (file_path -> ids).
+        for int_id_str, entry in self.metadata_db.items():
+            meta = entry.get("metadata", {})
+            path = meta.get("relative_path") or meta.get("file_path")
+            if path == file_path:
+                ids_to_remove.append(int(int_id_str))
+                
+        if not ids_to_remove:
+            return 0
+            
+        try:
+            self.index.remove_ids(np.array(ids_to_remove, dtype=np.int64))
+            for iid in ids_to_remove:
+                # Remove from metadata and id_map
+                iid_str = str(iid)
+                # Find the chunk_id for this int_id to cleanup id_map
+                entry = self.metadata_db.get(iid_str)
+                if entry:
+                    chunk_id = entry.get("chunk_id")
+                    if chunk_id:
+                        del self.id_map_db[chunk_id]
+                del self.metadata_db[iid_str]
+                
+            return len(ids_to_remove)
+        except Exception as e:
+            self._logger.error(f"Failed to remove IDs: {e}")
+            return 0

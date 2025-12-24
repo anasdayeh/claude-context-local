@@ -1,0 +1,222 @@
+"""Core logic for code search and indexing server."""
+
+import os
+import logging
+from pathlib import Path
+from typing import List, Dict, Any, Optional
+
+from common_utils import get_storage_dir
+from search.indexer import CodeIndexManager
+from embeddings.embedder import CodeEmbedder
+from chunking.multi_language_chunker import MultiLanguageChunker
+from search.searcher import IntelligentSearcher
+
+logger = logging.getLogger(__name__)
+
+
+class CodeSearchServer:
+    """Main server class managing indexing and search operations."""
+
+    def __init__(self):
+        self.storage_root = get_storage_dir()
+        self.embedder = CodeEmbedder()
+        self.chunker = MultiLanguageChunker()
+        self._current_project = None
+        self._index_manager = None
+        self._searcher = None
+
+    def get_project_storage_dir(self, directory_path: str) -> Path:
+        """Get unique storage directory for a project path."""
+        import hashlib
+        path_hash = hashlib.md5(str(Path(directory_path).resolve()).encode()).hexdigest()
+        project_dir = self.storage_root / "projects" / path_hash
+        project_dir.mkdir(parents=True, exist_ok=True)
+        return project_dir
+
+    def ensure_project_indexed(self, directory_path: str, project_name: str = None) -> bool:
+        """Check if a project is already indexed."""
+        project_dir = self.get_project_storage_dir(directory_path)
+        index_dir = project_dir / "index"
+        
+        # Robust check: verify stats exists and has content
+        stats_path = index_dir / "stats.json"
+        if stats_path.exists():
+            try:
+                import json
+                with open(stats_path, "r") as f:
+                    stats = json.load(f)
+                    if stats.get("total_chunks", 0) > 0:
+                        return True
+            except Exception:
+                pass
+        return False
+
+    def switch_project(self, project_path: str) -> Dict[str, Any]:
+        """Switch current active project."""
+        project_dir = self.get_project_storage_dir(project_path)
+        index_dir = project_dir / "index"
+
+        if not self.ensure_project_indexed(project_path):
+            return {
+                "error": f"Project not indexed: {project_path}",
+                "suggestion": f"Run index_directory('{project_path}') first"
+            }
+
+        self._index_manager = CodeIndexManager(str(index_dir))
+        self._searcher = IntelligentSearcher(self._index_manager, self.embedder)
+        self._current_project = project_path
+        
+        return {"success": True, "project": project_path}
+
+    def index_directory(
+        self,
+        directory_path: str,
+        project_name: str = None,
+        file_patterns: List[str] = None,
+        incremental: bool = True,
+        progress_callback=None,
+    ) -> dict:
+        """Implementation of index_directory tool."""
+        try:
+            from search.incremental_indexer import IncrementalIndexer
+            
+            project_dir = self.get_project_storage_dir(directory_path)
+            index_dir = project_dir / "index"
+            
+            if not project_name:
+                project_name = Path(directory_path).name
+                
+            index_manager = CodeIndexManager(str(index_dir))
+            # Use MultiLanguageChunker with root path for relative path calculation
+            chunker = MultiLanguageChunker(root_path=directory_path)
+            indexer = IncrementalIndexer(index_manager, self.embedder, chunker, str(project_dir))
+            
+            logger.info(f"Indexing {directory_path} (name={project_name}, patterns={file_patterns})")
+            
+            result = indexer.incremental_index(
+                directory_path,
+                project_name,
+                file_patterns=file_patterns,
+                force_full=not incremental,
+                progress_callback=progress_callback
+            )
+            
+            # Auto-switch to newly indexed project
+            self.switch_project(directory_path)
+            
+            return {
+                "success": result.success,
+                "files_added": result.files_added,
+                "files_modified": result.files_modified,
+                "files_removed": result.files_removed,
+                "chunks_added": result.chunks_added,
+                "chunks_removed": result.chunks_removed,
+                "time_taken": round(result.time_taken, 2),
+                "project_id": project_dir.name
+            }
+        except Exception as e:
+            logger.error(f"Index failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    def search_code(
+        self,
+        query: str,
+        project_path: str = None,
+        file_pattern: str = None,
+        k: int = 5,
+        include_context: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Implementation of search_code tool."""
+        if project_path:
+            switch_res = self.switch_project(project_path)
+            if "error" in switch_res:
+                return [switch_res]
+        
+        if not self._searcher:
+            return [{"error": "No project selected. Provide project_path or run index_directory first."}]
+
+        try:
+            # Respect both tool parameter and env var for backward compatibility/global override
+            env_include_context = os.getenv("CODE_SEARCH_INCLUDE_CONTEXT", "").lower() in {"1", "true", "yes"}
+            context_depth = 1 if (include_context or env_include_context) else 0
+            
+            filters = {}
+            if file_pattern:
+                filters['file_pattern'] = [file_pattern]
+                
+            results = self._searcher.search(query, k=k, filters=filters, context_depth=context_depth)
+            
+            formatted_results = []
+            for res in results:
+                formatted_results.append({
+                    "file": res.relative_path,
+                    "type": res.chunk_type,
+                    "name": res.name,
+                    "lines": f"{res.start_line}-{res.end_line}",
+                    "content": res.content_preview,
+                    "score": round(res.similarity_score, 3)
+                })
+            return formatted_results
+        except Exception as e:
+            logger.error(f"Search failed: {e}")
+            return [{"error": str(e)}]
+
+    def get_stats(self, project_path: str = None) -> Dict[str, Any]:
+        """Get indexing statistics for a project."""
+        target_path = project_path or self._current_project
+        if not target_path:
+            return {"error": "No project selected."}
+            
+        project_dir = self.get_project_storage_dir(target_path)
+        index_dir = project_dir / "index"
+        
+        # Basic project info
+        stats = {
+            "project_name": Path(target_path).name,
+            "project_path": target_path,
+            "project_id": project_dir.name,
+            "storage_path": str(project_dir)
+        }
+        
+        # Load detailed stats if available
+        index_manager = CodeIndexManager(str(index_dir))
+        index_stats = index_manager.get_stats()
+        stats.update(index_stats)
+        
+        return stats
+
+    def list_projects(self) -> List[Dict[str, Any]]:
+        """List all indexed projects."""
+        projects_dir = self.storage_root / "projects"
+        if not projects_dir.exists():
+            return []
+            
+        projects = []
+        for p_dir in projects_dir.iterdir():
+            if not p_dir.is_dir():
+                continue
+            
+            # Attempt to find project path from metadata/snapshots
+            try:
+                # We could store a metadata.json in project_dir for easier listing
+                # For now, just return directory names and check stats
+                stats_path = p_dir / "index" / "stats.json"
+                if stats_path.exists():
+                    import json
+                    with open(stats_path, "r") as f:
+                        meta = json.load(f)
+                        projects.append({
+                            "id": p_dir.name,
+                            "last_updated": meta.get("last_updated"),
+                            "chunks": meta.get("total_chunks", 0)
+                        })
+            except Exception:
+                pass
+        return projects
+
+    def _maybe_start_model_preload(self):
+        """Preload the embedding model in background if requested."""
+        try:
+            self.embedder.model
+        except Exception:
+            pass

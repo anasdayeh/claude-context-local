@@ -1,0 +1,34 @@
+{
+  "total_chunks": 140,
+  "index_size": 140,
+  "embedding_dimension": 768,
+  "index_type": "IndexFlatIP",
+  "files_indexed": 45,
+  "top_folders": {
+    "minute-main": 95,
+    "common": 42,
+    "packages": 34,
+    "ui": 33,
+    "frontend": 28,
+    "database": 28,
+    "backend": 15,
+    "api": 15,
+    "routes": 15,
+    "components": 13
+  },
+  "chunk_types": {
+    "function": 50,
+    "module": 13,
+    "class": 37,
+    "decorated_definition": 11,
+    "type": 14,
+    "method": 2,
+    "interface": 2
+  },
+  "top_tags": {
+    "python": 65,
+    "tsx": 48,
+    "typescript": 15,
+    "javascript": 1
+  }
+}

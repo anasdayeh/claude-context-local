@@ -50,21 +50,34 @@ class EmbeddingModel(ABC):
 
     def _resolve_device(self, requested: Optional[str]) -> str:
         """Resolve device string."""
-        req = (requested or "auto").lower()
-        if req in ("auto", "none", ""):
+        if requested is None or requested.lower() == "auto":
             if torch.cuda.is_available():
                 return "cuda"
             try:
-                if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() and torch.backends.mps.is_built():
                     return "mps"
             except Exception:
                 pass
             return "cpu"
-        if req.startswith("cuda"):
-            return "cuda" if torch.cuda.is_available() else "cpu"
-        if req == "mps":
+
+        requested = requested.lower()
+
+        if requested == "cpu":
+            return "cpu"
+
+        if requested.startswith("cuda"):
+            if torch.cuda.is_available():
+                return requested  # preserve cuda:0 etc
+            # Fallback
+            return "cpu"
+
+        if requested == "mps":
             try:
-                return "mps" if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() else "cpu"
+                if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() and torch.backends.mps.is_built():
+                    return "mps"
             except Exception:
-                return "cpu"
+                pass
+            return "cpu"
+            
+        # Fallback for unknown
         return "cpu"

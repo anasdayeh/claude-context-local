@@ -1,0 +1,31 @@
+{
+  "version": "1.0",
+  "timestamp": "2025-12-24T00:38:14.770878",
+  "dag": {
+    "root_path": "/private/var/folders/yj/ytjt2n_50_79nqw2s43p8w3w0000gn/T/tmp4x2ebjrb/sample",
+    "root_node": {
+      "path": ".",
+      "hash": "1957efc8423d1feb9a523a94eaa184c7206e427dddfc9ee280bb00ab0941a74b",
+      "is_file": false,
+      "size": 0,
+      "children": [
+        {
+          "path": "main.py",
+          "hash": "7583f173ed2c06deff9a99b9bf0e4de292886c137614c1fbc7e25c613baaea3f",
+          "is_file": true,
+          "size": 38,
+          "children": []
+        },
+        {
+          "path": "utils.py",
+          "hash": "ba1a531f581d2e6094e978ed6f7aca7a8d92eeb62c6e7ad73ee692f7f18bc772",
+          "is_file": true,
+          "size": 32,
+          "children": []
+        }
+      ]
+    },
+    "file_count": 2,
+    "total_size": 70
+  }
+}

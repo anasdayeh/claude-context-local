@@ -1,0 +1,16 @@
+{
+  "total_chunks": 669,
+  "index_size": 669,
+  "embedding_dimension": 768,
+  "index_type": "IndexFlatIP",
+  "files_indexed": 4,
+  "top_folders": {},
+  "chunk_types": {
+    "function": 654,
+    "module": 1
+  },
+  "top_tags": {
+    "javascript": 655,
+    "async": 1
+  }
+}

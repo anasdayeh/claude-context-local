@@ -1,0 +1,36 @@
+{
+  "total_chunks": 962,
+  "index_size": 962,
+  "embedding_dimension": 768,
+  "index_type": "IndexFlatIP",
+  "files_indexed": 74,
+  "top_folders": {
+    "minute-main": 810,
+    "frontend": 534,
+    "lib": 480,
+    "client": 461,
+    "common": 232,
+    "@tanstack": 106,
+    "services": 57,
+    "database": 56,
+    "packages": 34,
+    "backend": 30
+  },
+  "chunk_types": {
+    "function": 251,
+    "module": 5,
+    "class": 171,
+    "decorated_definition": 57,
+    "type": 330,
+    "method": 34,
+    "interface": 6
+  },
+  "top_tags": {
+    "typescript": 514,
+    "python": 276,
+    "tsx": 63,
+    "generic": 54,
+    "async": 21,
+    "javascript": 1
+  }
+}

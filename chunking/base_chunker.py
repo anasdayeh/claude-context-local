@@ -5,7 +5,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from tree_sitter import Parser
+try:
+    from tree_sitter import Parser
+    TREE_SITTER_AVAILABLE = True
+except ImportError:
+    Parser = None
+    TREE_SITTER_AVAILABLE = False
 
 from chunking.available_languages import get_availiable_language
 # map {language: language_obj}
@@ -47,6 +52,8 @@ class LanguageChunker(ABC):
             language_name: Programming language name
         """
         self.language_name = language_name
+        if not TREE_SITTER_AVAILABLE:
+            raise ValueError(f"Tree-sitter not available. Cannot chunk {language_name}")
         if language_name not in AVAILABLE_LANGUAGES:
             raise ValueError(f"Language {language_name} not available. Install tree-sitter-{language_name}")
 

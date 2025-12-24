@@ -1,0 +1,32 @@
+{
+  "total_chunks": 57,
+  "index_size": 57,
+  "embedding_dimension": 768,
+  "index_type": "IndexIDMap2",
+  "files_indexed": 15,
+  "top_folders": {
+    "src": 31,
+    "scripts": 15,
+    "styles": 5,
+    "test": 2,
+    "test-results": 2,
+    "tests": 2
+  },
+  "chunk_types": {
+    "function": 19,
+    "at_rule": 5,
+    "module": 3,
+    "type": 7,
+    "interface": 1,
+    "pair": 4,
+    "section": 18
+  },
+  "top_tags": {
+    "markdown": 18,
+    "javascript": 15,
+    "typescript": 15,
+    "css": 5,
+    "json": 4,
+    "async": 2
+  }
+}

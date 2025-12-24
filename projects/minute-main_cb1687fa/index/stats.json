@@ -1,0 +1,27 @@
+{
+  "total_chunks": 41,
+  "index_size": 41,
+  "embedding_dimension": 768,
+  "index_type": "IndexFlatIP",
+  "files_indexed": 16,
+  "top_folders": {
+    "frontend": 41,
+    "components": 27,
+    "ui": 23,
+    "app": 14,
+    "(admin)": 5,
+    "admin": 5,
+    "configs": 5,
+    "[id]": 5,
+    "transcriptions": 5,
+    "[transcriptionId]": 5
+  },
+  "chunk_types": {
+    "type": 5,
+    "function": 31,
+    "interface": 5
+  },
+  "top_tags": {
+    "tsx": 41
+  }
+}

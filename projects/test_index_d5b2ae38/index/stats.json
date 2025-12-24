@@ -1,0 +1,14 @@
+{
+  "total_chunks": 1,
+  "index_size": 1,
+  "embedding_dimension": 768,
+  "index_type": "IndexFlatIP",
+  "files_indexed": 1,
+  "top_folders": {},
+  "chunk_types": {
+    "module": 1
+  },
+  "top_tags": {
+    "python": 1
+  }
+}

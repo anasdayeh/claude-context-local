@@ -96,7 +96,7 @@ class SnapshotManager:
         with open(metadata_path, 'w') as f:
             json.dump(metadata_data, f, indent=2)
     
-    def load_snapshot(self, project_path: str) -> Optional[MerkleDAG]:
+    def load_latest_snapshot(self, project_path: str) -> Optional[MerkleDAG]:
         """Load a Merkle DAG snapshot from disk.
         
         Args:
@@ -236,3 +236,17 @@ class SnapshotManager:
             
         age = datetime.now().timestamp() - snapshot_path.stat().st_mtime
         return age
+
+    def get_snapshot_stats(self, project_path: str) -> Optional[Dict]:
+        """Return snapshot metadata plus computed age."""
+        metadata = self.load_metadata(project_path)
+        if metadata is None:
+            return None
+        age = self.get_snapshot_age(project_path)
+        if age is not None:
+            metadata["snapshot_age"] = age
+        return metadata
+
+    def load_snapshot(self, project_path: str) -> Optional[MerkleDAG]:
+        """Backward compatibility alias for load_latest_snapshot."""
+        return self.load_latest_snapshot(project_path)

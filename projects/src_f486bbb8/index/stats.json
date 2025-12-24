@@ -1,0 +1,39 @@
+{
+  "total_chunks": 105,
+  "index_size": 105,
+  "embedding_dimension": 768,
+  "index_type": "IndexIDMap2",
+  "files_indexed": 39,
+  "top_folders": {
+    "scripts": 46,
+    "components": 20,
+    "pages": 11,
+    "articles": 5,
+    "data": 5,
+    "styles": 5,
+    "assets": 2,
+    "logos": 2,
+    "content": 2,
+    "layouts": 2
+  },
+  "chunk_types": {
+    "element": 15,
+    "frontmatter": 12,
+    "script": 5,
+    "document": 1,
+    "function": 53,
+    "module": 6,
+    "at_rule": 5,
+    "type": 7,
+    "interface": 1
+  },
+  "top_tags": {
+    "javascript": 46,
+    "astro": 30,
+    "typescript": 21,
+    "css": 5,
+    "async": 3,
+    "xml": 2,
+    "markdown": 1
+  }
+}

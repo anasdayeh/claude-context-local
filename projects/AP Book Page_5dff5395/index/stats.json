@@ -1,0 +1,16 @@
+{
+  "total_chunks": 42,
+  "index_size": 42,
+  "embedding_dimension": 768,
+  "index_type": "IndexFlatIP",
+  "files_indexed": 1,
+  "top_folders": {
+    "A Journey to Arabia Felix_ Thirty Days on Foot and by Camel through the Sultanate of Oman - Arabian Publishing_files": 42
+  },
+  "chunk_types": {
+    "function": 42
+  },
+  "top_tags": {
+    "javascript": 42
+  }
+}

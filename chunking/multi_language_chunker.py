@@ -84,8 +84,11 @@ class MultiLanguageChunker:
                 # Convert TreeSitterChunk to CodeChunk
                 return self._convert_tree_chunks(tree_chunks, file_path)
 
-            # Fallback for text-like files when tree-sitter isn't available
-            if suffix in self.TEXT_FALLBACK_EXTENSIONS:
+            # Fallback for text-like files OR if tree-sitter failed/isn't available
+            # This ensures we get text chunks for Python/JS even if tree-sitter bindings are missing
+            if suffix in self.TEXT_FALLBACK_EXTENSIONS or not tree_chunks:
+                # Only fallback if we explicitly found no tree chunks (and it wasn't just an empty file handled by tree-sitter)
+                # But tree-sitter chunker returns [] if parser is missing.
                 return self.text_chunker.chunk_file(file_path)
 
             return []
@@ -190,10 +193,18 @@ class MultiLanguageChunker:
             # Add language tag
             tags.append(tchunk.language)
             
-            # Create CodeChunk
+            # Create CodeChunk with safe relative path handling
+            if self.root_path:
+                try:
+                    relative_path = str(path.relative_to(self.root_path))
+                except ValueError:
+                    relative_path = str(path)
+            else:
+                relative_path = str(path)
+
             chunk = CodeChunk(
                 file_path=str(path),
-                relative_path=str(path.relative_to(self.root_path)) if self.root_path else str(path),
+                relative_path=relative_path,
                 folder_structure=folder_parts,
                 chunk_type=chunk_type,
                 content=tchunk.content,
@@ -251,3 +262,5 @@ class MultiLanguageChunker:
         
         logger.info(f"Total chunks from directory: {len(all_chunks)}")
         return all_chunks
+
+# fallback logic improved

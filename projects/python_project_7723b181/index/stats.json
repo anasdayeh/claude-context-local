@@ -1,0 +1,23 @@
+{
+  "total_chunks": 72,
+  "index_size": 72,
+  "embedding_dimension": 768,
+  "index_type": "IndexIDMap2",
+  "files_indexed": 6,
+  "top_folders": {
+    "src": 70,
+    "utils": 28,
+    "api": 18,
+    "auth": 12,
+    "database": 12
+  },
+  "chunk_types": {
+    "function": 22,
+    "class": 16,
+    "method": 33,
+    "decorated_definition": 1
+  },
+  "top_tags": {
+    "python": 72
+  }
+}

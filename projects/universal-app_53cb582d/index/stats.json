@@ -1,0 +1,29 @@
+{
+  "total_chunks": 67,
+  "index_size": 67,
+  "embedding_dimension": 768,
+  "index_type": "IndexFlatIP",
+  "files_indexed": 27,
+  "top_folders": {
+    "src": 66,
+    "app": 27,
+    "components": 16,
+    "insights": 12,
+    "review-queue": 7,
+    "types": 7,
+    "lib": 6,
+    "admin": 5,
+    "ui": 5,
+    "context": 5
+  },
+  "chunk_types": {
+    "module": 2,
+    "function": 42,
+    "type": 8,
+    "interface": 15
+  },
+  "top_tags": {
+    "tsx": 48,
+    "typescript": 19
+  }
+}
