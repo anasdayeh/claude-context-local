@@ -144,6 +144,7 @@ uv run --directory ~/.local/share/claude-context-local \\
 ```
 
 This uses the same storage/artifacts as the MCP server, so Codex can search immediately once it finishes.
+Running via `uv run --directory ~/.local/share/claude-context-local` reuses the canonical MCP environment and uv cache (no extra venvs).
 
 ## Configuration
 
