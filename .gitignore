@@ -311,3 +311,6 @@ models/models--google--embeddinggemma-300m/snapshots/57c266a740f537b4dc058e1b0cd
 models/models--google--embeddinggemma-300m/snapshots/57c266a740f537b4dc058e1b0cda161fd15afa75/3_Dense/config.json
 models/models--google--embeddinggemma-300m/snapshots/57c266a740f537b4dc058e1b0cda161fd15afa75/3_Dense/model.safetensors
 merkle/snapshot_manager.py
+
+# Local index artifacts
+projects/
