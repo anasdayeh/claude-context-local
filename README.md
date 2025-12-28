@@ -120,6 +120,31 @@ Open Codex and say: index this codebase. No manual commands needed.
 
 ### 3) Use in Codex
 
+### Offline indexing (no Codex usage)
+
+If you want to run indexing yourself (overnight, no token usage), use the MCP pipeline CLI:
+
+```bash
+uv run --directory ~/.local/share/claude-context-local \\
+  python scripts/index_repo.py /path/to/repo \\
+  --project-name MyRepo \\
+  --sharded \\
+  --log-file ~/code_search_index.log
+```
+
+Background + polling:
+
+```bash
+uv run --directory ~/.local/share/claude-context-local \\
+  python scripts/index_repo.py /path/to/repo \\
+  --project-name MyRepo \\
+  --sharded \\
+  --background \\
+  --log-file ~/code_search_index.log
+```
+
+This uses the same storage/artifacts as the MCP server, so Codex can search immediately once it finishes.
+
 ## Configuration
 
 Environment variables (set in your MCP server config):

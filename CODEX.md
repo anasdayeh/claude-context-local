@@ -54,6 +54,13 @@ python -m pytest tests/unit/test_chunking.py -v  # Single test file
 # Index a Python codebase
 ./scripts/index_codebase.py /path/to/project
 
+# Index a repo using the MCP pipeline (recommended for large repos)
+uv run --directory ~/.local/share/claude-context-local \
+  python scripts/index_repo.py /path/to/repo \
+  --project-name MyRepo \
+  --sharded \
+  --log-file ~/code_search_index.log
+
 # Index with custom storage location
 ./scripts/index_codebase.py /path/to/project --storage-dir /custom/location
 
