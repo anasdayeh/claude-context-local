@@ -4,10 +4,13 @@ import asyncio
 import logging
 import json
 import os
+import time
+from pathlib import Path
 from typing import Optional, Any
 from concurrent.futures import ThreadPoolExecutor
 
 from mcp.server.fastmcp import FastMCP, Context
+from merkle.merkle_dag import MerkleDAG
 
 from mcp_server.code_search_server import CodeSearchServer
 
@@ -94,6 +97,47 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(executor, lambda: func(*args, **kwargs))
 
+    def _should_background_index(directory_path: str, file_patterns: Optional[list[str]]) -> bool:
+        force_async = os.getenv("CODE_SEARCH_ASYNC_INDEX", "").lower() in {"1", "true", "yes"}
+        if force_async:
+            return True
+        force_sync = os.getenv("CODE_SEARCH_SYNC_INDEX", "").lower() in {"1", "true", "yes"}
+        if force_sync:
+            return False
+
+        threshold = int(os.getenv("CODE_SEARCH_ASYNC_FILE_THRESHOLD", "2500") or 2500)
+        scan_seconds = float(os.getenv("CODE_SEARCH_ASYNC_SCAN_SECONDS", "2") or 2)
+
+        try:
+            root = Path(directory_path).resolve()
+        except Exception:
+            root = Path(directory_path)
+
+        dag = MerkleDAG(str(root))
+        counted = 0
+        deadline = time.time() + max(0.25, scan_seconds)
+
+        try:
+            for current_root, dirs, files in os.walk(str(root)):
+                # Respect the same ignore patterns as the MerkleDAG builder.
+                dirs[:] = [d for d in dirs if not dag.should_ignore(Path(d))]
+
+                for f in files:
+                    if dag.should_ignore(Path(f)):
+                        continue
+                    counted += 1
+                    if counted >= threshold:
+                        return True
+
+                if time.time() >= deadline:
+                    # Fail-safe: if scanning itself is slow, treat as "large" and avoid blocking tool call.
+                    return True
+        except Exception:
+            # If we can't scan reliably, prefer background indexing to keep tools responsive.
+            return True
+
+        return False
+
     @mcp.tool(description=strings.get("tools", {}).get("search_code", "Search code"))
     async def search_code(
         query: str,
@@ -115,7 +159,7 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
             chunk_type,
             include_context,
             auto_reindex,
-            max_age_minutes, project_path,
+            max_age_minutes, project_path, False,
         )
         return _coerce_result(result)
 
@@ -127,13 +171,49 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
         incremental: bool = True,
         ctx: Optional[Context] = None,
     ) -> dict:
+        if _should_background_index(directory_path, file_patterns):
+            await _send_progress(ctx, "indexing started (background job)", progress=0)
+            result = await _run(
+                server.start_index_job,
+                directory_path,
+                project_name,
+                file_patterns,
+                incremental,
+            )
+            try:
+                if ctx is not None:
+                    await ctx.session.send_resource_updated("codesearch://projects/list")
+                    await ctx.session.send_resource_updated("search://stats")
+            except Exception:
+                pass
+            return _coerce_result(result)
+
         await _send_progress(ctx, "indexing started", progress=0)
+        loop = asyncio.get_running_loop()
+
+        def progress_callback(message: str) -> None:
+            if ctx is None:
+                return
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    _send_progress(ctx, message, progress=None, total=None),
+                    loop,
+                )
+                # Avoid warnings about never-awaited coroutines
+                try:
+                    fut.result(timeout=0)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
         result = await _run(
             server.index_directory,
             directory_path,
             project_name,
             file_patterns,
             incremental,
+            progress_callback,
         )
         await _send_progress(ctx, "indexing completed", progress=100)
         
@@ -145,6 +225,43 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
             await ctx.session.send_resource_updated("search://stats")
         except Exception:
             pass
+        return _coerce_result(result)
+
+    @mcp.tool(description=strings.get("tools", {}).get("start_index_directory", "Start indexing as a background job"))
+    async def start_index_directory(
+        directory_path: str,
+        project_name: str = None,
+        file_patterns: list[str] = None,
+        incremental: bool = True,
+        ctx: Optional[Context] = None,
+    ) -> dict:
+        result = await _run(
+            server.start_index_job,
+            directory_path,
+            project_name,
+            file_patterns,
+            incremental,
+        )
+        try:
+            if ctx is not None:
+                await ctx.session.send_resource_updated("codesearch://projects/list")
+                await ctx.session.send_resource_updated("search://stats")
+        except Exception:
+            pass
+        return _coerce_result(result)
+
+    @mcp.tool(description=strings.get("tools", {}).get("get_index_job_status", "Get status for a background index job"))
+    async def get_index_job_status(
+        job_id: str = None,
+        project_path: str = None,
+        ctx: Optional[Context] = None,
+    ) -> dict:
+        result = await _run(server.get_index_job_status, job_id, project_path)
+        return _coerce_result(result)
+
+    @mcp.tool(description=strings.get("tools", {}).get("cancel_index_job", "Cancel a background index job"))
+    async def cancel_index_job(job_id: str, ctx: Optional[Context] = None) -> dict:
+        result = await _run(server.cancel_index_job, job_id)
         return _coerce_result(result)
 
     @mcp.tool(description=strings.get("tools", {}).get("find_similar_code", "Find similar code"))
@@ -163,7 +280,7 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
 
     @mcp.tool(description=strings.get("tools", {}).get("list_projects", "List projects"))
     async def list_projects(ctx: Optional[Context] = None) -> dict:
-        result = await _run(server.list_projects)
+        result = await _run(server.list_projects, False)
         return _coerce_result(result)
 
     @mcp.tool(description=strings.get("tools", {}).get("switch_project", "Switch project"))
@@ -212,7 +329,7 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
     def list_indexed_projects() -> str:
         """List all projects that have been indexed in this environment."""
         try:
-            projects = server.list_projects()
+            projects = server.list_projects(as_dict=False)
             return json.dumps(projects, indent=2)
         except Exception as e:
             return json.dumps({"error": f"Failed to list projects: {str(e)}"})

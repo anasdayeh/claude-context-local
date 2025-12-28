@@ -1,6 +1,7 @@
 """Main embedding logic for handling code and queries."""
 
 import logging
+import gc
 from typing import List, Dict, Any, Optional, Set
 from dataclasses import dataclass
 import numpy as np
@@ -8,24 +9,45 @@ import numpy as np
 from chunking.code_chunk import CodeChunk
 from embeddings.embedding_models_register import AVAILIABLE_MODELS
 
-@dataclass
 class EmbeddingResult:
     """Result of embedding generation for a chunk."""
-    chunk: CodeChunk
-    embedding: np.ndarray
-    model_name: str
-    tokens: int = 0
+
+    def __init__(
+        self,
+        chunk: Optional[CodeChunk] = None,
+        embedding: Optional[np.ndarray] = None,
+        model_name: str = "",
+        tokens: int = 0,
+        chunk_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if embedding is None:
+            raise ValueError("embedding is required")
+        self.chunk = chunk
+        self.embedding = embedding
+        self.model_name = model_name
+        self.tokens = tokens
+        self._chunk_id_override = chunk_id
+        self._metadata_override = metadata
+
     @property
     def chunk_id(self) -> str:
         """Generate a stable unique ID for this chunk."""
+        if self._chunk_id_override:
+            return self._chunk_id_override
+        if not self.chunk:
+            return ""
         import hashlib
-        # Combine path, name, lines, and type for uniqueness
         raw_id = f"{self.chunk.relative_path}:{self.chunk.name}:{self.chunk.start_line}:{self.chunk.chunk_type}"
         return hashlib.md5(raw_id.encode()).hexdigest()
 
     @property
     def metadata(self) -> Dict[str, Any]:
         """Convert chunk into storage-ready metadata dictionary."""
+        if self._metadata_override is not None:
+            return self._metadata_override
+        if not self.chunk:
+            return {}
         return {
             "name": self.chunk.name,
             "chunk_id": self.chunk_id,
@@ -181,36 +203,132 @@ class CodeEmbedder:
         if not chunks:
             return []
 
+        if not batch_size or batch_size <= 0:
+            batch_size = 32
+
         texts = [self.create_embedding_content(chunk) for chunk in chunks]
         results = []
         total = len(texts)
         
         self._logger.info(f"Generating embeddings for {total} chunks (batch_size={batch_size})")
 
-        for i in range(0, total, batch_size):
-            batch_texts = texts[i : i + batch_size]
-            batch_chunks = chunks[i : i + batch_size]
-            try:
-                self._logger.info(f"Loop {i}: text_len={len(batch_texts)} chunk_len={len(batch_chunks)}")
-                batch_embeddings = self._encode_documents(batch_texts)
-                self._logger.info(f"Loop {i}: embed_len={len(batch_embeddings)}")
-                
-                # Zip embeddings with chunks to create result objects
-                batch_results = []
-                for chunk, embedding in zip(batch_chunks, batch_embeddings):
-                    batch_results.append(EmbeddingResult(
-                        chunk=chunk,
-                        embedding=embedding,
-                        model_name=self.model_name
-                    ))
-                self._logger.info(f"Loop {i}: zipped_results={len(batch_results)}")
-                results.extend(batch_results)
-            except Exception as e:
-                self._logger.error(f"Batch encoding failed at index {i}: {e}")
-                raise
+        i = 0
+        adaptive_batch = batch_size
+        while i < total:
+            current_batch = min(adaptive_batch, total - i)
+            batch_texts = texts[i : i + current_batch]
+            batch_chunks = chunks[i : i + current_batch]
+
+            while True:
+                try:
+                    self._logger.info(
+                        f"Loop {i}: text_len={len(batch_texts)} chunk_len={len(batch_chunks)}"
+                    )
+                    batch_embeddings = self._encode_documents(batch_texts)
+                    self._logger.info(f"Loop {i}: embed_len={len(batch_embeddings)}")
+                    break
+                except Exception as e:
+                    if not self._is_oom_error(e):
+                        self._logger.error(f"Batch encoding failed at index {i}: {e}")
+                        raise
+
+                    if current_batch > 1:
+                        next_batch = max(1, current_batch // 2)
+                        self._notify_progress(
+                            f"OOM backoff: batch {current_batch}->{next_batch}"
+                        )
+                        self._logger.warning(
+                            "OOM during embedding; reducing batch size from %d to %d",
+                            current_batch,
+                            next_batch,
+                        )
+                        self._clear_device_cache()
+                        adaptive_batch = next_batch
+                        current_batch = min(adaptive_batch, total - i)
+                        batch_texts = texts[i : i + current_batch]
+                        batch_chunks = chunks[i : i + current_batch]
+                        continue
+
+                    if self._force_cpu_fallback():
+                        self._notify_progress("OOM: retrying on CPU fallback")
+                        self._logger.warning(
+                            "OOM at batch_size=1; retrying on CPU fallback"
+                        )
+                        self._clear_device_cache()
+                        continue
+
+                    self._logger.error(f"Batch encoding failed at index {i}: {e}")
+                    raise
+
+            batch_results = []
+            for chunk, embedding in zip(batch_chunks, batch_embeddings):
+                batch_results.append(EmbeddingResult(
+                    chunk=chunk,
+                    embedding=embedding,
+                    model_name=self.model_name
+                ))
+            self._logger.info(f"Loop {i}: zipped_results={len(batch_results)}")
+            results.extend(batch_results)
+            i += current_batch
 
         self._logger.info(f"Embedding generation completed. Results: {len(results)}")
         return results
+
+    def _notify_progress(self, message: str) -> None:
+        callback = getattr(self, "_progress_callback", None)
+        if not callback:
+            return
+        try:
+            callback(message)
+        except Exception:
+            pass
+
+    def _is_oom_error(self, exc: Exception) -> bool:
+        message = str(exc).lower()
+        return any(
+            token in message
+            for token in (
+                "out of memory",
+                "oom",
+                "mps backend out of memory",
+                "cuda out of memory",
+            )
+        )
+
+    def _clear_device_cache(self) -> None:
+        gc.collect()
+        try:
+            import torch
+        except Exception:
+            return
+
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+        except Exception:
+            pass
+
+    def _force_cpu_fallback(self) -> bool:
+        model = getattr(self, "_model", None)
+        if model is None:
+            return False
+
+        changed = False
+        if hasattr(model, "_device"):
+            if getattr(model, "_device", None) != "cpu":
+                model._device = "cpu"
+                changed = True
+        if hasattr(model, "_fallback_attempted"):
+            model._fallback_attempted = True
+        if hasattr(model, "_reset_model"):
+            try:
+                model._reset_model()
+                changed = True
+            except Exception:
+                return False
+        return changed
 
     def embed_query(self, query: str) -> np.ndarray:
         return self._encode_queries([query])[0]

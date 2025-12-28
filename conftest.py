@@ -63,11 +63,11 @@ def pytest_collection_modifyitems(config, items):
 class EmbeddingModelMock:
     """Mock embedding model for testing."""
 
-    def __init__(self, cache_dir=None, device="cpu"):
+    def __init__(self, model_name=None, cache_dir=None, device="cpu", **kwargs):
         """Initialize mock model."""
         self.cache_dir = cache_dir
         self.device = device
-        self.model_name = "google/embeddinggemma-300m"
+        self.model_name = model_name or "google/embeddinggemma-300m"
         self.rng = np.random.RandomState(42)  # Deterministic seed for reproducible tests
 
     def encode(self, texts, **kwargs):

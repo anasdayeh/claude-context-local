@@ -4,6 +4,7 @@ import logging
 import os
 import time
 import fnmatch
+import shutil
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Set
 from datetime import datetime
@@ -16,6 +17,9 @@ from search.indexer import CodeIndexManager
 from chunking.multi_language_chunker import MultiLanguageChunker
 
 logger = logging.getLogger(__name__)
+
+class IndexingCanceled(Exception):
+    """Raised when an indexing run is cooperatively canceled."""
 
 
 @dataclass
@@ -36,20 +40,37 @@ class IncrementalIndexer:
 
     def __init__(
         self,
-        index_manager: CodeIndexManager,
-        embedder: CodeEmbedder,
-        chunker: MultiLanguageChunker,
-        storage_dir: str
+        index_manager: Optional[CodeIndexManager] = None,
+        embedder: Optional[CodeEmbedder] = None,
+        chunker: Optional[MultiLanguageChunker] = None,
+        storage_dir: Optional[str] = None,
+        indexer: Optional[CodeIndexManager] = None,
+        snapshot_manager: Optional[SnapshotManager] = None,
     ):
+        if index_manager is None and indexer is not None:
+            index_manager = indexer
+        if index_manager is None:
+            raise ValueError("index_manager is required")
+
         self.indexer = index_manager
         self.embedder = embedder
         self.chunker = chunker
-        self.snapshot_manager = SnapshotManager(storage_dir)
+
+        if snapshot_manager is None:
+            if storage_dir is None:
+                try:
+                    storage_dir = str(Path(self.indexer.storage_dir).parent)
+                except Exception:
+                    storage_dir = str(Path.cwd())
+            snapshot_manager = SnapshotManager(storage_dir)
+        self.snapshot_manager = snapshot_manager
         self.chunk_batch_size = self._read_env_int("CODE_SEARCH_CHUNK_BATCH_SIZE", 100)
         self.embed_batch_size = self._read_env_int(
             "CODE_SEARCH_EMBED_BATCH_SIZE",
             self._read_env_int("CODE_SEARCH_BATCH_SIZE", 32),
         )
+        self.disk_warn_gb = self._read_env_int_allow_zero("CODE_SEARCH_DISK_WARN_GB", 5)
+        self.large_file_mb = self._read_env_int_allow_zero("CODE_SEARCH_LARGE_FILE_MB", 20)
         self._progress_callback = None
         self._checkpoint_interval = self.chunk_batch_size * 5
 
@@ -60,6 +81,16 @@ class IncrementalIndexer:
         try:
             parsed = int(value)
             return parsed if parsed > 0 else default
+        except ValueError:
+            return default
+
+    def _read_env_int_allow_zero(self, name: str, default: int) -> int:
+        value = os.getenv(name)
+        if value is None or value == "":
+            return default
+        try:
+            parsed = int(value)
+            return parsed if parsed >= 0 else default
         except ValueError:
             return default
 
@@ -84,27 +115,56 @@ class IncrementalIndexer:
                     return True
         return False
 
+    def _warn_if_low_disk(self) -> None:
+        if self.disk_warn_gb is None:
+            return
+        try:
+            usage = shutil.disk_usage(self.snapshot_manager.storage_dir)
+        except Exception:
+            return
+        free_gb = usage.free / (1024 ** 3)
+        if free_gb < self.disk_warn_gb:
+            logger.warning(
+                "Low disk space: %.2f GB free at %s",
+                free_gb,
+                self.snapshot_manager.storage_dir,
+            )
+
+    def _warn_if_large_file(self, file_path: str) -> None:
+        if self.large_file_mb is None:
+            return
+        try:
+            size_mb = os.path.getsize(file_path) / (1024 ** 2)
+        except Exception:
+            return
+        if size_mb >= self.large_file_mb:
+            logger.warning("Large file %.2f MB: %s", size_mb, file_path)
+
     def incremental_index(
         self,
         project_path: str,
         project_name: str,
         file_patterns: Optional[List[str]] = None,
         force_full: bool = False,
-        progress_callback=None
+        progress_callback=None,
+        cancel_event=None,
     ) -> IncrementalIndexResult:
         """Perform incremental indexing of a project."""
         self._progress_callback = progress_callback
         start_time = time.time()
         
         try:
+            if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+                raise IndexingCanceled("Indexing canceled before start")
+
             if force_full:
-                return self._full_index(project_path, project_name, start_time, file_patterns)
+                return self._full_index(project_path, project_name, start_time, file_patterns, cancel_event)
 
             # Load latest snapshot
             latest_dag = self.snapshot_manager.load_latest_snapshot(project_path)
             if latest_dag is None:
                 logger.info("No existing snapshot found. Performing full index.")
-                return self._full_index(project_path, project_name, start_time, file_patterns)
+                return self._full_index(project_path, project_name, start_time, file_patterns, cancel_event)
 
             # Build current DAG
             current_dag = MerkleDAG(project_path)
@@ -128,8 +188,10 @@ class IncrementalIndexer:
             )
             
             # Process changes
+            if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+                raise IndexingCanceled("Indexing canceled")
             chunks_removed = self._remove_old_chunks(changes, project_name)
-            chunks_added = self._add_new_chunks(changes, project_path, project_name)
+            chunks_added = self._add_new_chunks(changes, project_path, project_name, cancel_event)
             
             # Update snapshot
             self.snapshot_manager.save_snapshot(current_dag, {
@@ -158,6 +220,16 @@ class IncrementalIndexer:
                 success=True
             )
             
+        except IndexingCanceled as e:
+            logger.warning("%s", e)
+            # Best-effort checkpoint before returning
+            try:
+                self.indexer.save_index()
+            except Exception:
+                pass
+            return IncrementalIndexResult(
+                0, 0, 0, 0, 0, time.time() - start_time, False, error=str(e)
+            )
         except Exception as e:
             logger.error(f"Incremental indexing failed: {e}")
             return IncrementalIndexResult(
@@ -182,10 +254,12 @@ class IncrementalIndexer:
         project_path: str,
         project_name: str,
         start_time: float,
-        file_patterns: Optional[List[str]] = None
+        file_patterns: Optional[List[str]] = None,
+        cancel_event=None,
     ) -> IncrementalIndexResult:
         """Perform full indexing of a project."""
         try:
+            self._warn_if_low_disk()
             # Clear existing index
             self.indexer.clear_index()
             
@@ -201,6 +275,9 @@ class IncrementalIndexer:
             dag = MerkleDAG(project_path)
             dag.build()
             all_files = dag.get_all_files()
+
+            if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+                raise IndexingCanceled("Indexing canceled")
             
             # Filter supported and patterned files
             supported_files = []
@@ -218,9 +295,11 @@ class IncrementalIndexer:
             batch: List = []
             self._chunks_processed_in_session = 0
             
-            for chunk in self._iter_chunks(supported_files, project_path):
+            for chunk in self._iter_chunks(supported_files, project_path, cancel_event):
                 batch.append(chunk)
                 if len(batch) >= self.chunk_batch_size:
+                    if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+                        raise IndexingCanceled("Indexing canceled")
                     processed = self._process_batch(batch, project_name)
                     chunks_added += processed
                     self._chunks_processed_in_session += processed
@@ -233,6 +312,8 @@ class IncrementalIndexer:
                         self._chunks_processed_in_session = 0
 
             if batch:
+                if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+                    raise IndexingCanceled("Indexing canceled")
                 chunks_added += self._process_batch(batch, project_name)
             
             # Save final snapshot
@@ -263,17 +344,34 @@ class IncrementalIndexer:
                 success=True
             )
             
+        except IndexingCanceled as e:
+            logger.warning("%s", e)
+            try:
+                self.indexer.save_index(extra_metadata={
+                    "project_name": project_name,
+                    "project_path": project_path,
+                    "status": "canceled",
+                    "last_indexed": datetime.now().isoformat(),
+                })
+            except Exception:
+                pass
+            return IncrementalIndexResult(
+                0, 0, 0, 0, 0, time.time() - start_time, False, error=str(e)
+            )
         except Exception as e:
             logger.error(f"Full indexing failed: {e}")
             return IncrementalIndexResult(
                 0, 0, 0, 0, 0, time.time() - start_time, False, error=str(e)
             )
 
-    def _iter_chunks(self, files: List[str], project_path: str):
+    def _iter_chunks(self, files: List[str], project_path: str, cancel_event=None):
         """Yield chunks for each supported file."""
         for file_path in files:
+            if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+                raise IndexingCanceled("Indexing canceled")
             full_path = (Path(project_path) / file_path).resolve()
             try:
+                self._warn_if_large_file(str(full_path))
                 chunks = self.chunker.chunk_file(str(full_path))
                 if not chunks:
                     continue
@@ -287,7 +385,16 @@ class IncrementalIndexer:
         if not chunks:
             return 0
 
-        embedding_results = self.embedder.embed_chunks(chunks, batch_size=self.embed_batch_size or 32)
+        prev_callback = getattr(self.embedder, "_progress_callback", None)
+        if self._progress_callback:
+            self.embedder._progress_callback = self._progress_callback
+        try:
+            embedding_results = self.embedder.embed_chunks(
+                chunks,
+                batch_size=self.embed_batch_size or 32,
+            )
+        finally:
+            self.embedder._progress_callback = prev_callback
         if not embedding_results:
             return 0
 
@@ -301,7 +408,13 @@ class IncrementalIndexer:
             chunks_removed += self.indexer.remove_file_chunks(file_path)
         return chunks_removed
 
-    def _add_new_chunks(self, changes: FileChanges, project_path: str, project_name: str) -> int:
+    def _add_new_chunks(
+        self,
+        changes: FileChanges,
+        project_path: str,
+        project_name: str,
+        cancel_event=None,
+    ) -> int:
         """Add chunks for new/modified files."""
         files_to_process = changes.added + changes.modified
         if not files_to_process:
@@ -310,9 +423,11 @@ class IncrementalIndexer:
         chunks_added = 0
         batch: List = []
         self._chunks_processed_in_session = 0
-        for chunk in self._iter_chunks(files_to_process, project_path):
+        for chunk in self._iter_chunks(files_to_process, project_path, cancel_event):
             batch.append(chunk)
             if len(batch) >= self.chunk_batch_size:
+                if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+                    raise IndexingCanceled("Indexing canceled")
                 processed = self._process_batch(batch, project_name)
                 chunks_added += processed
                 self._chunks_processed_in_session += processed
@@ -323,6 +438,8 @@ class IncrementalIndexer:
                     self._chunks_processed_in_session = 0
 
         if batch:
+            if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+                raise IndexingCanceled("Indexing canceled")
             chunks_added += self._process_batch(batch, project_name)
 
         return chunks_added

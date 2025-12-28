@@ -80,11 +80,20 @@ codex mcp add claude_context_local -- uv run --directory ~/.local/share/claude-c
 ### MCP Environment Options
 
 - `CODE_SEARCH_STORAGE`: Base directory for indexes and model cache.
+- `CODE_SEARCH_DATA_DIR`: Alias for `CODE_SEARCH_STORAGE`.
 - `CODE_SEARCH_DEVICE`: `cpu` | `mps` | `cuda` (auto if unset).
 - `CODE_SEARCH_PRELOAD_MODEL`: `1` to preload on startup (off by default).
 - `CODE_SEARCH_CHUNK_BATCH_SIZE`: chunk batch size for indexing.
 - `CODE_SEARCH_EMBED_BATCH_SIZE`: embedding batch size for model encode.
 - `CODE_SEARCH_INCLUDE_CONTEXT`: include same-file context in search results.
+- `CODE_SEARCH_DISK_WARN_GB`: warn if free disk below this threshold (warn-only).
+- `CODE_SEARCH_LARGE_FILE_MB`: warn on large files above this size (warn-only).
+- `CODE_SEARCH_ASYNC_INDEX`: force `index_directory` to run as a background job (recommended for large repos).
+- `CODE_SEARCH_SYNC_INDEX`: force `index_directory` to block until completion (not recommended for large repos due to Codex tool-call timeouts).
+- `CODE_SEARCH_ASYNC_FILE_THRESHOLD`: file-count heuristic used to auto background-index (default ~2500).
+- `CODE_SEARCH_ASYNC_SCAN_SECONDS`: max seconds to spend estimating repo size before defaulting to background indexing (default ~2).
+- `CODE_SEARCH_INDEX_WORKERS`: background indexing workers (default 1).
+- `CODE_SEARCH_JOB_EVENT_BUFFER`: stored job progress events (default 200).
 
 ## Architecture
 
@@ -106,7 +115,7 @@ The codebase is organized into distinct modules with clear separation of concern
 
   - `server.py`: FastMCP server exposing search tools to Codex
   - `code_search_mcp.py`: legacy shim used by tests
-  - Provides `search_code`, `index_directory`, `find_similar_code`, etc.
+  - Provides `search_code`, `index_directory`, `start_index_directory`, `get_index_job_status`, `cancel_index_job`, `find_similar_code`, etc.
 
 - **`merkle/`**: Incremental indexing support
   - `merkle_dag.py`: Merkle tree implementation for efficient change detection
@@ -175,9 +184,12 @@ Tests are organized by component with pytest markers:
 ### Environment Variables
 
 - `CODE_SEARCH_STORAGE`: Custom storage directory (default: `~/.claude_code_search`)
+- `CODE_SEARCH_DATA_DIR`: Alias for `CODE_SEARCH_STORAGE`
 - `CODE_SEARCH_CHUNK_BATCH_SIZE`: Chunk batch size for indexing (default: 256)
 - `CODE_SEARCH_EMBED_BATCH_SIZE`: Embed batch size for model inference (falls back to `CODE_SEARCH_BATCH_SIZE`)
 - `CODE_SEARCH_TORCH_BEFORE_FAISS`: Force torch import before FAISS on startup (`true`/`false`)
+- `CODE_SEARCH_DISK_WARN_GB`: Warn if free disk below this threshold (warn-only)
+- `CODE_SEARCH_LARGE_FILE_MB`: Warn on files larger than this size (warn-only)
 
 ## Common Tasks
 

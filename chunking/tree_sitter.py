@@ -62,7 +62,7 @@ class TreeSitterChunker:
 
         if content is None:
             try:
-                with open(file_path, 'r', encoding='utf-8') as f:
+                with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
                     content = f.read()
             except Exception as e:
                 logger.error(f"Failed to read file {file_path}: {e}")

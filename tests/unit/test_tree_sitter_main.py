@@ -1,5 +1,6 @@
 """Unit tests for the main TreeSitterChunker class."""
 
+import logging
 import tempfile
 import shutil
 from pathlib import Path
@@ -63,3 +64,17 @@ class TestClass:
         """Test handling of unsupported file types."""
         chunks = self.chunker.chunk_file('test.unsupported', 'some content')
         assert len(chunks) == 0, "Unsupported files should produce no chunks"
+
+    def test_non_utf8_file_does_not_log_error(self, caplog):
+        import chunking.tree_sitter as tsf
+
+        if 'python' not in tsf.AVAILABLE_LANGUAGES:
+            pytest.skip("tree-sitter-python not installed")
+
+        file_path = Path(self.temp_dir) / 'bad.py'
+        file_path.write_bytes(b"def ok():\n    return 'x'\n\xff")
+
+        with caplog.at_level(logging.ERROR):
+            _ = self.chunker.chunk_file(str(file_path))
+
+        assert "Failed to read file" not in caplog.text

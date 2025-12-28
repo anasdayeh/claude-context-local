@@ -37,6 +37,12 @@
 - **mcp_server/server.py**: Normalized transport handling and improved security defaults for HTTP transport.
 - **mcp_server/code_search_mcp.py**: Fixed conditional inheritance of `FastMCP` to prevent `ImportError` in partial environments.
 - **mcp_server/strings.yaml**: Updated `index_directory` documentation to match the tool schema (`file_patterns`).
+- **common_utils.py**: Added CODE_SEARCH_DATA_DIR alias for storage configuration.
+- **mcp_server/code_search_server.py**: Restored safe model preload hook to avoid startup crashes when preloading is enabled.
+- **chunking/tree_sitter.py**: Tolerates non-UTF-8 source files by using replacement decoding.
+- **embeddings/embedder.py**: Added adaptive batch backoff on OOM with cache clears and CPU fallback.
+- **search/incremental_indexer.py**: Warns on low disk and large files without stopping indexing.
+- **mcp_server/mcp_tools.py**: Surfaced adaptive embedding backoff messages via MCP progress notifications.
 
 ### Security
 - Restricted default bind host for HTTP transport to `127.0.0.1` in `server.py`.

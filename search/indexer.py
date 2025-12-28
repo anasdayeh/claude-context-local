@@ -378,6 +378,10 @@ class CodeIndexManager:
                     # 3. Match on filename
                     if fnmatch.fnmatch(Path(norm_path).name, norm_pattern):
                         match = True; break
+                    # 4. Fallback: substring match for plain patterns
+                    if not any(ch in norm_pattern for ch in "*?[]"):
+                        if norm_pattern in norm_path:
+                            match = True; break
                 if not match:
                     continue
             
@@ -406,8 +410,13 @@ class CodeIndexManager:
         
         return {
             'total_chunks': self.index.ntotal if self.index else 0,
+            'files_indexed': self._count_indexed_files(),
             'storage_size': self.index_path.stat().st_size if self.index_path.exists() else 0
         }
+
+    def get_index_size(self) -> int:
+        """Return number of vectors in the index."""
+        return self.index.ntotal if self.index else 0
 
     def _update_stats(self, extra_metadata: Optional[Dict[str, Any]] = None) -> None:
         """Recalculate and save index statistics."""
@@ -419,8 +428,12 @@ class CodeIndexManager:
             except Exception:
                 pass
 
+        files_indexed, chunk_types, top_tags = self._collect_metadata_stats()
         stats = {
             'total_chunks': self.index.ntotal if self.index else 0,
+            'files_indexed': files_indexed,
+            'chunk_types': chunk_types,
+            'top_tags': top_tags,
             'last_updated': time.time()
         }
         if extra_metadata:
@@ -432,6 +445,48 @@ class CodeIndexManager:
                 json.dump(current_stats, f, indent=2)
         except Exception as e:
             self._logger.error(f"Failed to update stats: {e}")
+
+    def _count_indexed_files(self) -> int:
+        """Count unique files represented in metadata."""
+        try:
+            file_paths = set()
+            for entry in self.metadata_db.values():
+                meta = entry.get("metadata") if isinstance(entry, dict) else None
+                if not isinstance(meta, dict):
+                    continue
+                path = meta.get("relative_path") or meta.get("file_path")
+                if path:
+                    file_paths.add(path)
+            return len(file_paths)
+        except Exception:
+            return 0
+
+    def _collect_metadata_stats(self) -> tuple[int, Dict[str, int], Dict[str, int]]:
+        """Collect files indexed, chunk type counts, and top tags."""
+        file_paths = set()
+        chunk_types: Dict[str, int] = {}
+        tag_counts: Dict[str, int] = {}
+        try:
+            for entry in self.metadata_db.values():
+                meta = entry.get("metadata") if isinstance(entry, dict) else None
+                if not isinstance(meta, dict):
+                    continue
+                path = meta.get("relative_path") or meta.get("file_path")
+                if path:
+                    file_paths.add(path)
+                ctype = meta.get("chunk_type")
+                if ctype:
+                    chunk_types[ctype] = chunk_types.get(ctype, 0) + 1
+                tags = meta.get("tags") or []
+                for tag in tags:
+                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
+        except Exception:
+            return len(file_paths), {}, {}
+
+        top_tags = dict(
+            sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)[:20]
+        )
+        return len(file_paths), chunk_types, top_tags
 
     def save_index(self, extra_metadata: Optional[Dict[str, Any]] = None) -> None:
         """Save index and metadata to disk."""
@@ -489,12 +544,16 @@ class CodeIndexManager:
             return 0
             
         ids_to_remove = []
+        norm_target = Path(file_path).as_posix()
         # This is a linear scan of metadata - okay for small/medium repos.
         # For very large ones, we'd need a secondary index (file_path -> ids).
         for int_id_str, entry in self.metadata_db.items():
             meta = entry.get("metadata", {})
             path = meta.get("relative_path") or meta.get("file_path")
-            if path == file_path:
+            if not path:
+                continue
+            norm_path = Path(path).as_posix()
+            if norm_path == norm_target or norm_path.endswith(norm_target) or norm_target.endswith(norm_path):
                 ids_to_remove.append(int(int_id_str))
                 
         if not ids_to_remove:

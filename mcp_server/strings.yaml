@@ -9,6 +9,19 @@ tools:
     Minimal usage: index_directory("/path/to/project")
     Full usage: index_directory("/path/to/project", project_name="project", file_patterns="*.py", incremental=False)
 
+  start_index_directory: |
+    Start indexing as a background job and return a job_id for polling (recommended for large repos).
+    Minimal usage: start_index_directory("/path/to/project")
+    Full usage: start_index_directory("/path/to/project", project_name="project", file_patterns=["*.py"], incremental=False)
+
+  get_index_job_status: |
+    Get status for a background indexing job.
+    Usage: get_index_job_status(job_id="...") or get_index_job_status(project_path="/path/to/project")
+
+  cancel_index_job: |
+    Request cooperative cancellation of a background indexing job.
+    Usage: cancel_index_job(job_id="...")
+
   find_similar_code: |
     Find code chunks functionally similar to a reference chunk. Useful for finding alternative implementations, code duplication, or refactoring related code.
     Usage: find_similar_code(chunk_id from search_code, k=5)

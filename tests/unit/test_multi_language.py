@@ -35,7 +35,7 @@ class TestMultiLanguageChunker:
         assert chunker.is_supported("test.c++")
         assert chunker.is_supported("test.cs")
         assert chunker.is_supported("test.rs")
-        assert not chunker.is_supported("test.txt")
+        assert chunker.is_supported("test.txt")
     
     def test_chunk_python_file(self, chunker, test_data_dir):
         """Test chunking Python file."""

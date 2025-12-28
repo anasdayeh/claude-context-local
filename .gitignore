@@ -218,6 +218,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 .DS_Store
+merkle/
 merkle/1f5c9f39711752315485135358dc99e2_metadata.json
 merkle/1f5c9f39711752315485135358dc99e2_snapshot.json
 merkle/2fc25ac0e3e24c486b02bee05a1faac3_metadata.json

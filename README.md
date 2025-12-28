@@ -116,6 +116,8 @@ Then open Codex; the server will run in stdio mode inside the `uv` environment.
 
 Open Codex and say: index this codebase. No manual commands needed.
 
+**Large repos:** `index_directory` automatically switches to a background job to avoid Codex’s ~30-minute per-tool-call timeout. Poll `get_index_job_status` until it shows `status=completed`, then search as normal.
+
 ### 3) Use in Codex
 
 ## Configuration
@@ -123,11 +125,20 @@ Open Codex and say: index this codebase. No manual commands needed.
 Environment variables (set in your MCP server config):
 
 - `CODE_SEARCH_STORAGE` (default: `~/.claude_code_search`)
+- `CODE_SEARCH_DATA_DIR` (alias for `CODE_SEARCH_STORAGE`)
 - `CODE_SEARCH_DEVICE` (`cpu`, `mps`, `cuda`)
 - `CODE_SEARCH_PRELOAD_MODEL` (`0`/`1`)
 - `CODE_SEARCH_CHUNK_BATCH_SIZE` (chunking batch size)
 - `CODE_SEARCH_EMBED_BATCH_SIZE` (embedding batch size)
 - `CODE_SEARCH_INCLUDE_CONTEXT` (`0`/`1`)
+- `CODE_SEARCH_DISK_WARN_GB` (warn if free disk below this threshold; does not stop indexing)
+- `CODE_SEARCH_LARGE_FILE_MB` (warn on files larger than this size; does not skip by default)
+- `CODE_SEARCH_ASYNC_INDEX` (`0`/`1`): force background indexing for `index_directory`
+- `CODE_SEARCH_SYNC_INDEX` (`0`/`1`): force synchronous indexing for `index_directory`
+- `CODE_SEARCH_ASYNC_FILE_THRESHOLD` (file-count heuristic to auto background-index; default ~2500)
+- `CODE_SEARCH_ASYNC_SCAN_SECONDS` (max seconds to spend estimating repo size; default ~2)
+- `CODE_SEARCH_INDEX_WORKERS` (background indexing worker threads; default 1)
+- `CODE_SEARCH_JOB_EVENT_BUFFER` (max stored progress events per job; default 200)
 
 Interact via chat inside Codex; no function calls or commands are required.
 
