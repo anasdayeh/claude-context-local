@@ -147,14 +147,15 @@ class ShardedIndexManager:
         except Exception:
             pass
 
-    def add_embeddings(self, embedding_results: List) -> None:
+    def add_embeddings(self, embedding_results: List, update_stats: bool = True) -> None:
         manager = self.active_manager()
-        manager.add_embeddings(embedding_results)
+        manager.add_embeddings(embedding_results, update_stats=update_stats)
 
-        stats = manager.get_stats()
-        current_bytes = int(stats.get("storage_size", 0))
-        self._update_manifest_for_shard(self._active_shard_id, stats)
-        self._maybe_rollover(current_bytes)
+        if update_stats:
+            stats = manager.get_stats()
+            current_bytes = int(stats.get("storage_size", 0))
+            self._update_manifest_for_shard(self._active_shard_id, stats)
+            self._maybe_rollover(current_bytes)
 
     def remove_file_chunks(self, file_path: str) -> int:
         removed = 0

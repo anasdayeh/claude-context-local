@@ -13,6 +13,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 from mcp_server.code_search_server import CodeSearchServer
 
 
