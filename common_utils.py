@@ -2,6 +2,21 @@ import os
 from pathlib import Path
 from functools import lru_cache
 
+def get_available_memory_bytes() -> int:
+    """Return available memory in bytes when possible."""
+    try:
+        import psutil  # type: ignore
+        return int(psutil.virtual_memory().available)
+    except Exception:
+        pass
+
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        avail_pages = os.sysconf("SC_AVPHYS_PAGES")
+        return int(page_size) * int(avail_pages)
+    except Exception:
+        return 0
+
 @lru_cache(maxsize=1)
 def get_storage_dir() -> Path:
     """Get or create base storage directory. Cached for performance."""

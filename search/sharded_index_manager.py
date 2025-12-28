@@ -9,6 +9,7 @@ from typing import Dict, Iterable, List, Optional, Tuple, Any
 
 from search.indexer import CodeIndexManager
 from search.shard_manifest import ShardManifest
+from common_utils import get_available_memory_bytes
 
 
 class ShardedIndexManager:
@@ -22,10 +23,13 @@ class ShardedIndexManager:
 
         self._lock = threading.RLock()
         self._managers: Dict[str, CodeIndexManager] = {}
+        self._loaded_shards: Dict[str, int] = {}
+        self._lru: List[str] = []
 
         self._target_shard_bytes = int(
             os.getenv("CODE_SEARCH_SHARD_TARGET_BYTES", "536870912") or 536870912
         )
+        self._max_bytes = self._compute_budget_bytes()
 
         self._manifest = self._load_or_init_manifest()
         self._active_shard_id = self._ensure_active_shard()
@@ -82,12 +86,52 @@ class ShardedIndexManager:
             shard_path = self.shards_root / shard_id
             manager = CodeIndexManager(str(shard_path))
             self._managers[shard_id] = manager
+            self._mark_loaded(shard_id, manager.get_storage_bytes())
             return manager
 
     def _maybe_rollover(self, current_shard_bytes: int) -> None:
         if current_shard_bytes <= self._target_shard_bytes:
             return
         self._active_shard_id = self._create_new_shard()
+
+    def _compute_budget_bytes(self) -> int:
+        cap_gb = float(os.getenv("CODE_SEARCH_SHARD_MEMORY_CAP_GB", "13") or 13)
+        cap_bytes = int(cap_gb * 1024 ** 3)
+        available = get_available_memory_bytes()
+        if available <= 0:
+            return cap_bytes
+        return min(cap_bytes, int(available * 0.75))
+
+    def _mark_loaded(self, shard_id: str, bytes_used: int) -> None:
+        self._loaded_shards[shard_id] = int(bytes_used)
+        if shard_id in self._lru:
+            self._lru.remove(shard_id)
+        self._lru.append(shard_id)
+        self._enforce_budget()
+
+    def _enforce_budget(self) -> None:
+        if not self._loaded_shards:
+            return
+        budget = self._max_bytes or self._compute_budget_bytes()
+        while sum(self._loaded_shards.values()) > budget and self._lru:
+            victim = self._lru.pop(0)
+            self._loaded_shards.pop(victim, None)
+            manager = self._managers.pop(victim, None)
+            if manager is not None:
+                self._release_manager(manager)
+
+    def _release_manager(self, manager: CodeIndexManager) -> None:
+        try:
+            if getattr(manager, "_metadata_db", None):
+                manager._metadata_db.close()
+            if getattr(manager, "_id_map_db", None):
+                manager._id_map_db.close()
+        except Exception:
+            pass
+        try:
+            manager._index = None
+        except Exception:
+            pass
 
     def add_embeddings(self, embedding_results: List) -> None:
         manager = self.active_manager()
