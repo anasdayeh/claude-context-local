@@ -197,6 +197,7 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
 
     @mcp.resource("search://stats")
     def get_search_statistics() -> str:
+        """Get search engine statistics."""
         try:
             project_path = server.current_project_path() or os.getcwd()
             project_dir = server.get_project_storage_dir(project_path)
@@ -206,6 +207,30 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
             return json.dumps({"error": "No stats available"})
         except Exception as e:
             return json.dumps({"error": f"Failed to get statistics: {str(e)}"})
+
+    @mcp.resource("codesearch://projects/list")
+    def list_indexed_projects() -> str:
+        """List all projects that have been indexed in this environment."""
+        try:
+            projects = server.list_projects()
+            return json.dumps(projects, indent=2)
+        except Exception as e:
+            return json.dumps({"error": f"Failed to list projects: {str(e)}"})
+
+    @mcp.resource("codesearch://projects/{project_id}")
+    def get_project_details(project_id: str) -> str:
+        """Get detailed statistics and metadata for a specific indexed project."""
+        try:
+            # We need a way to find project path by ID, or just look in storage root
+            projects_dir = server.storage_root / "projects"
+            p_dir = projects_dir / project_id
+            if p_dir.exists() and p_dir.is_dir():
+                stats_path = p_dir / "index" / "stats.json"
+                if stats_path.exists():
+                    return stats_path.read_text()
+            return json.dumps({"error": f"Project {project_id} not found"})
+        except Exception as e:
+            return json.dumps({"error": f"Failed to get project details: {str(e)}"})
 
     @mcp.prompt()
     def search_help() -> str:

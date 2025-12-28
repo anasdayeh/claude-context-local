@@ -244,10 +244,18 @@ class CodeSearchServer:
                             "project_name": s.get("project_name", p_dir.name),
                             "project_path": s.get("project_path", "unknown"),
                             "total_chunks": s.get("total_chunks", 0),
-                            "last_indexed": s.get("last_indexed", "unknown")
+                            "last_indexed": s.get("last_indexed", "unknown"),
+                            "status": s.get("status", "ready")
                         })
                 except Exception:
-                    pass
+                    # Minimum fallback if stats.json is corrupted
+                    projects.append({
+                        "project_id": p_dir.name,
+                        "project_name": p_dir.name,
+                        "project_path": "unknown",
+                        "total_chunks": 0,
+                        "status": "partial"
+                    })
         return sorted(projects, key=lambda x: x.get("last_indexed", ""), reverse=True)
 
     def clear_index(self, project_path: str = None) -> Dict[str, Any]:

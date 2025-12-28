@@ -409,22 +409,33 @@ class CodeIndexManager:
             'storage_size': self.index_path.stat().st_size if self.index_path.exists() else 0
         }
 
-    def _update_stats(self) -> None:
+    def _update_stats(self, extra_metadata: Optional[Dict[str, Any]] = None) -> None:
         """Recalculate and save index statistics."""
+        current_stats = {}
+        if self.stats_path.exists():
+            try:
+                with open(self.stats_path, 'r') as f:
+                    current_stats = json.load(f)
+            except Exception:
+                pass
+
         stats = {
             'total_chunks': self.index.ntotal if self.index else 0,
             'last_updated': time.time()
         }
+        if extra_metadata:
+            current_stats.update(extra_metadata)
+        current_stats.update(stats)
+
         try:
             with open(self.stats_path, 'w') as f:
-                json.dump(stats, f)
+                json.dump(current_stats, f, indent=2)
         except Exception as e:
             self._logger.error(f"Failed to update stats: {e}")
 
-    def save_index(self) -> None:
+    def save_index(self, extra_metadata: Optional[Dict[str, Any]] = None) -> None:
         """Save index and metadata to disk."""
         if self._index:
-            # Ensure we save the CPU version if it's on GPU
             index_to_save = self._index
             if self._on_gpu:
                 index_to_save = faiss.index_gpu_to_cpu(self._index)
@@ -436,7 +447,7 @@ class CodeIndexManager:
         if self._id_map_db:
             self._id_map_db.commit()
             
-        self._update_stats()
+        self._update_stats(extra_metadata=extra_metadata)
 
     def clear_index(self) -> None:
         """Completely clear the index and all metadata."""

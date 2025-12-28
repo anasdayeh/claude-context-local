@@ -1,10 +1,12 @@
 """Incremental indexing logic using Merkle DAGs and change detection."""
 
 import logging
+import os
 import time
 import fnmatch
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Set
+from datetime import datetime
 from dataclasses import dataclass
 from merkle.merkle_dag import MerkleDAG
 from merkle.snapshot_manager import SnapshotManager
@@ -43,9 +45,44 @@ class IncrementalIndexer:
         self.embedder = embedder
         self.chunker = chunker
         self.snapshot_manager = SnapshotManager(storage_dir)
-        self.chunk_batch_size = 100
-        self.embed_batch_size = 32
+        self.chunk_batch_size = self._read_env_int("CODE_SEARCH_CHUNK_BATCH_SIZE", 100)
+        self.embed_batch_size = self._read_env_int(
+            "CODE_SEARCH_EMBED_BATCH_SIZE",
+            self._read_env_int("CODE_SEARCH_BATCH_SIZE", 32),
+        )
         self._progress_callback = None
+        self._checkpoint_interval = self.chunk_batch_size * 5
+
+    def _read_env_int(self, name: str, default: int) -> int:
+        value = os.getenv(name)
+        if not value:
+            return default
+        try:
+            parsed = int(value)
+            return parsed if parsed > 0 else default
+        except ValueError:
+            return default
+
+    def _pattern_matches(self, path: str, pattern_list) -> bool:
+        norm_path = path.replace('\\', '/')
+        patterns = pattern_list if isinstance(pattern_list, list) else [pattern_list]
+        for pattern in patterns:
+            norm_pattern = str(pattern).replace('\\', '/')
+            # Direct match
+            if fnmatch.fnmatch(norm_path, norm_pattern):
+                return True
+            # Match as sub-path for unanchored patterns
+            if not norm_pattern.startswith('/') and not norm_pattern.startswith('./'):
+                if fnmatch.fnmatch(norm_path, "*/" + norm_pattern):
+                    return True
+            # Match filename only
+            if fnmatch.fnmatch(Path(norm_path).name, norm_pattern):
+                return True
+            # Match **/prefix patterns
+            if norm_pattern.startswith("**/"):
+                if fnmatch.fnmatch(norm_path, norm_pattern[3:]):
+                    return True
+        return False
 
     def incremental_index(
         self,
@@ -75,7 +112,7 @@ class IncrementalIndexer:
 
             # Detect changes
             detector = ChangeDetector(self.snapshot_manager)
-            changes = detector.get_changes(latest_dag, current_dag)
+            changes = detector.detect_changes(latest_dag, current_dag)
             
             # Apply file patterns if provided
             if file_patterns:
@@ -104,7 +141,12 @@ class IncrementalIndexer:
             })
             
             # Update index
-            self.indexer.save_index()
+            self.indexer.save_index(extra_metadata={
+                "project_name": project_name,
+                "project_path": project_path,
+                "status": "ready",
+                "last_indexed": datetime.now().isoformat()
+            })
             
             return IncrementalIndexResult(
                 files_added=len(changes.added),
@@ -127,17 +169,7 @@ class IncrementalIndexer:
     def _filter_changes(self, changes: FileChanges, file_patterns: List[str]) -> FileChanges:
         """Filter changes based on robust glob patterns."""
         def matches(path: str) -> bool:
-            norm_path = path.replace('\\', '/')
-            for pattern in file_patterns:
-                norm_pattern = pattern.replace('\\', '/')
-                # 1. Direct match
-                if fnmatch.fnmatch(norm_path, norm_pattern): return True
-                # 2. Match as sub-path (unanchored)
-                if not norm_pattern.startswith('/') and not norm_pattern.startswith('./'):
-                    if fnmatch.fnmatch(norm_path, "*/" + norm_pattern): return True
-                # 3. Match on filename
-                if fnmatch.fnmatch(Path(norm_path).name, norm_pattern): return True
-            return False
+            return self._pattern_matches(path, file_patterns)
 
         return FileChanges(
             added=[f for f in changes.added if matches(f)],
@@ -157,6 +189,14 @@ class IncrementalIndexer:
             # Clear existing index
             self.indexer.clear_index()
             
+            # Save preliminary metadata so it's not "unknown" in list
+            self.indexer.save_index(extra_metadata={
+                "project_name": project_name,
+                "project_path": project_path,
+                "status": "indexing",
+                "last_indexed": datetime.now().isoformat()
+            })
+            
             # Build DAG for all files
             dag = MerkleDAG(project_path)
             dag.build()
@@ -169,46 +209,49 @@ class IncrementalIndexer:
                     continue
                 
                 if file_patterns:
-                    norm_path = f.replace('\\', '/')
-                    match = False
-                    for pattern in file_patterns:
-                        norm_pattern = pattern.replace('\\', '/')
-                        # 1. Direct match
-                        if fnmatch.fnmatch(norm_path, norm_pattern): 
-                            match = True; break
-                        # 2. Match as sub-path (unanchored)
-                        if not norm_pattern.startswith('/') and not norm_pattern.startswith('./'):
-                            if fnmatch.fnmatch(norm_path, "*/" + norm_pattern):
-                                match = True; break
-                        # 3. Match on filename
-                        if fnmatch.fnmatch(Path(norm_path).name, norm_pattern):
-                            match = True; break
-                    if not match:
+                    if not self._pattern_matches(f, file_patterns):
                         continue
                 
                 supported_files.append(f)
             
             chunks_added = 0
             batch: List = []
+            self._chunks_processed_in_session = 0
+            
             for chunk in self._iter_chunks(supported_files, project_path):
                 batch.append(chunk)
                 if len(batch) >= self.chunk_batch_size:
-                    chunks_added += self._process_batch(batch, project_name)
+                    processed = self._process_batch(batch, project_name)
+                    chunks_added += processed
+                    self._chunks_processed_in_session += processed
                     batch = []
+                    
+                    # Periodic checkpoint
+                    if self._chunks_processed_in_session >= self._checkpoint_interval:
+                        logger.info(f"Checkpoint: Saved {chunks_added} chunks so far...")
+                        self.indexer.save_index()
+                        self._chunks_processed_in_session = 0
 
             if batch:
                 chunks_added += self._process_batch(batch, project_name)
             
-            # Save snapshot
+            # Save final snapshot
             self.snapshot_manager.save_snapshot(dag, {
                 'project_name': project_name,
+                'project_path': project_path,
                 'incremental_update': False,
                 'file_count': len(supported_files),
-                'chunks_indexed': chunks_added
+                'chunks_indexed': chunks_added,
+                'status': 'ready'
             })
             
-            # Save index to disk
-            self.indexer.save_index()
+            # Final save
+            self.indexer.save_index(extra_metadata={
+                "project_name": project_name,
+                "project_path": project_path,
+                "status": "ready",
+                "last_indexed": datetime.now().isoformat()
+            })
             
             return IncrementalIndexResult(
                 files_added=len(supported_files),
@@ -266,11 +309,18 @@ class IncrementalIndexer:
 
         chunks_added = 0
         batch: List = []
+        self._chunks_processed_in_session = 0
         for chunk in self._iter_chunks(files_to_process, project_path):
             batch.append(chunk)
             if len(batch) >= self.chunk_batch_size:
-                chunks_added += self._process_batch(batch, project_name)
+                processed = self._process_batch(batch, project_name)
+                chunks_added += processed
+                self._chunks_processed_in_session += processed
                 batch = []
+                
+                if self._chunks_processed_in_session >= self._checkpoint_interval:
+                    self.indexer.save_index()
+                    self._chunks_processed_in_session = 0
 
         if batch:
             chunks_added += self._process_batch(batch, project_name)

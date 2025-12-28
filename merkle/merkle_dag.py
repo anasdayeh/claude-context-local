@@ -66,6 +66,13 @@ class MerkleDAG:
             'target', 'bin', 'obj',
             '*.pyc', '*.pyo', '.DS_Store', 'Thumbs.db'
         }
+
+        extra_ignores = os.getenv("CODE_SEARCH_IGNORE_DIRS", "")
+        if extra_ignores:
+            for item in extra_ignores.split(","):
+                value = item.strip()
+                if value:
+                    self.ignore_patterns.add(value)
     
     def should_ignore(self, path: Path) -> bool:
         """Check if a path should be ignored.
