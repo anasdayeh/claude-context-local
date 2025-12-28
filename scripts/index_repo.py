@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import logging
 import os
 import sys
@@ -66,6 +67,11 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run indexing as a background job and poll progress",
     )
+    parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Disable resume-from-checkpoint for full indexing",
+    )
     return parser.parse_args()
 
 
@@ -84,9 +90,23 @@ def main() -> int:
 
     if args.log_file:
         os.environ["CODE_SEARCH_LOG_FILE"] = args.log_file
+    if args.no_resume:
+        os.environ["CODE_SEARCH_RESUME"] = "0"
 
     _setup_logging(args.verbose, args.log_file)
     logger = logging.getLogger(__name__)
+
+    try:
+        import search.sharded_index_manager as sim
+        from search.sharded_index_manager import ShardedIndexManager
+
+        logger.info(
+            "ShardedIndexManager source=%s signature=%s",
+            sim.__file__,
+            inspect.signature(ShardedIndexManager.add_embeddings),
+        )
+    except Exception as exc:
+        logger.info("ShardedIndexManager introspection failed: %s", exc)
 
     server = CodeSearchServer()
 

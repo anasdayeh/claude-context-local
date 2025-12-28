@@ -314,3 +314,4 @@ merkle/snapshot_manager.py
 
 # Local index artifacts
 projects/
+.DS_Store

@@ -15,6 +15,7 @@ from merkle.change_detector import FileChanges, ChangeDetector
 from embeddings.embedder import CodeEmbedder
 from search.indexer import CodeIndexManager
 from chunking.multi_language_chunker import MultiLanguageChunker
+from search.resume_state import ResumeState, load_resume_state, save_resume_state, clear_resume_state
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +149,7 @@ class IncrementalIndexer:
         force_full: bool = False,
         progress_callback=None,
         cancel_event=None,
+        resume: bool = True,
     ) -> IncrementalIndexResult:
         """Perform incremental indexing of a project."""
         self._progress_callback = progress_callback
@@ -158,13 +160,13 @@ class IncrementalIndexer:
                 raise IndexingCanceled("Indexing canceled before start")
 
             if force_full:
-                return self._full_index(project_path, project_name, start_time, file_patterns, cancel_event)
+                return self._full_index(project_path, project_name, start_time, file_patterns, cancel_event, resume)
 
             # Load latest snapshot
             latest_dag = self.snapshot_manager.load_latest_snapshot(project_path)
             if latest_dag is None:
                 logger.info("No existing snapshot found. Performing full index.")
-                return self._full_index(project_path, project_name, start_time, file_patterns, cancel_event)
+                return self._full_index(project_path, project_name, start_time, file_patterns, cancel_event, resume)
 
             # Build current DAG
             current_dag = MerkleDAG(project_path)
@@ -256,12 +258,29 @@ class IncrementalIndexer:
         start_time: float,
         file_patterns: Optional[List[str]] = None,
         cancel_event=None,
+        resume: bool = True,
     ) -> IncrementalIndexResult:
         """Perform full indexing of a project."""
         try:
             self._warn_if_low_disk()
-            # Clear existing index
-            self.indexer.clear_index()
+
+            resume_enabled = resume and os.getenv("CODE_SEARCH_RESUME", "1").lower() not in {"0", "false", "no"}
+            resume_state = None
+            if resume_enabled:
+                try:
+                    resume_state = load_resume_state(Path(self.indexer.storage_dir))
+                except Exception:
+                    resume_state = None
+
+            resume_active = (
+                resume_state is not None
+                and resume_state.status == "in_progress"
+                and resume_state.project_path == project_path
+            )
+
+            # Clear existing index only when not resuming an in-progress run.
+            if not resume_active:
+                self.indexer.clear_index()
             
             # Save preliminary metadata so it's not "unknown" in list
             self.indexer.save_index(extra_metadata={
@@ -290,31 +309,154 @@ class IncrementalIndexer:
                         continue
                 
                 supported_files.append(f)
-            
+
+            file_hashes = dag.get_file_hashes()
+            files_to_process = supported_files
+            removed_files: Set[str] = set()
+            changed_files: Set[str] = set()
+
+            if resume_enabled:
+                if not resume_active:
+                    resume_state = ResumeState(
+                        project_path=project_path,
+                        project_id=self.snapshot_manager.get_project_id(project_path),
+                        status="in_progress",
+                        files_total=len(supported_files),
+                        files_completed=0,
+                    )
+                    save_resume_state(Path(self.indexer.storage_dir), resume_state)
+                else:
+                    resume_state.files_total = len(supported_files)
+
+                if resume_active:
+                    completed = set(resume_state.completed)
+                    removed_files = completed - set(supported_files)
+                    changed_files = {
+                        f
+                        for f in completed
+                        if file_hashes.get(f) and resume_state.hashes.get(f) != file_hashes.get(f)
+                    }
+                    pending = [f for f in supported_files if f not in completed]
+                    # Reindex changed files
+                    pending.extend(sorted(changed_files))
+                    files_to_process = list(dict.fromkeys(pending))
+
+                    skipped_unchanged = max(0, len(completed) - len(changed_files) - len(removed_files))
+                    logger.info(
+                        "Resume active: completed=%d/%d skipped=%d changed=%d removed=%d pending=%d",
+                        len(completed),
+                        len(supported_files),
+                        skipped_unchanged,
+                        len(changed_files),
+                        len(removed_files),
+                        len(files_to_process),
+                    )
+                    if removed_files or changed_files:
+                        for f in removed_files | changed_files:
+                            resume_state.completed.discard(f)
+                            resume_state.hashes.pop(f, None)
+                        resume_state.files_completed = len(resume_state.completed)
+                        save_resume_state(Path(self.indexer.storage_dir), resume_state)
+                else:
+                    logger.info(
+                        "Resume initialized: completed=0/%d pending=%d",
+                        len(supported_files),
+                        len(files_to_process),
+                    )
+
+                if resume_active:
+                    if removed_files:
+                        for f in sorted(removed_files):
+                            try:
+                                self.indexer.remove_file_chunks(f)
+                            except Exception:
+                                pass
+                    if changed_files:
+                        for f in sorted(changed_files):
+                            try:
+                                self.indexer.remove_file_chunks(f)
+                            except Exception:
+                                pass
+
             chunks_added = 0
-            batch: List = []
             self._chunks_processed_in_session = 0
-            
-            for chunk in self._iter_chunks(supported_files, project_path, cancel_event):
-                batch.append(chunk)
-                if len(batch) >= self.chunk_batch_size:
+
+            for file_path in files_to_process:
+                if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+                    raise IndexingCanceled("Indexing canceled")
+                full_path = (Path(project_path) / file_path).resolve()
+                try:
+                    self._warn_if_large_file(str(full_path))
+                    chunks = self.chunker.chunk_file(str(full_path))
+                except Exception as e:
+                    logger.warning(f"Failed to chunk {file_path}: {e}")
+                    chunks = []
+
+                if not chunks:
+                    if resume_state and resume_enabled:
+                        resume_state.completed.add(file_path)
+                        resume_state.hashes[file_path] = file_hashes.get(file_path, "")
+                        resume_state.files_completed = len(resume_state.completed)
+                    continue
+
+                batch: List = []
+                for chunk in chunks:
+                    batch.append(chunk)
+                    if len(batch) >= self.chunk_batch_size:
+                        if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
+                            raise IndexingCanceled("Indexing canceled")
+                        processed = self._process_batch(batch, project_name)
+                        chunks_added += processed
+                        self._chunks_processed_in_session += processed
+                        batch = []
+
+                        if self._chunks_processed_in_session >= self._checkpoint_interval:
+                            logger.info(f"Checkpoint: Saved {chunks_added} chunks so far...")
+                            self.indexer.save_index()
+                            if resume_state and resume_enabled:
+                                total = max(1, resume_state.files_total)
+                                pct = (resume_state.files_completed / total) * 100.0
+                                logger.info(
+                                    "Progress: %d/%d files (%.1f%%)",
+                                    resume_state.files_completed,
+                                    resume_state.files_total,
+                                    pct,
+                                )
+                            if resume_state and resume_enabled:
+                                save_resume_state(Path(self.indexer.storage_dir), resume_state)
+                            self._chunks_processed_in_session = 0
+
+                if batch:
                     if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
                         raise IndexingCanceled("Indexing canceled")
                     processed = self._process_batch(batch, project_name)
                     chunks_added += processed
                     self._chunks_processed_in_session += processed
-                    batch = []
-                    
-                    # Periodic checkpoint
-                    if self._chunks_processed_in_session >= self._checkpoint_interval:
-                        logger.info(f"Checkpoint: Saved {chunks_added} chunks so far...")
-                        self.indexer.save_index()
-                        self._chunks_processed_in_session = 0
 
-            if batch:
-                if cancel_event is not None and getattr(cancel_event, "is_set", lambda: False)():
-                    raise IndexingCanceled("Indexing canceled")
-                chunks_added += self._process_batch(batch, project_name)
+                if resume_state and resume_enabled:
+                    resume_state.completed.add(file_path)
+                    resume_state.hashes[file_path] = file_hashes.get(file_path, "")
+                    resume_state.files_completed = len(resume_state.completed)
+
+                if self._chunks_processed_in_session >= self._checkpoint_interval:
+                    logger.info(f"Checkpoint: Saved {chunks_added} chunks so far...")
+                    self.indexer.save_index()
+                    if resume_state and resume_enabled:
+                        total = max(1, resume_state.files_total)
+                        pct = (resume_state.files_completed / total) * 100.0
+                        logger.info(
+                            "Progress: %d/%d files (%.1f%%)",
+                            resume_state.files_completed,
+                            resume_state.files_total,
+                            pct,
+                        )
+                    if resume_state and resume_enabled:
+                        save_resume_state(Path(self.indexer.storage_dir), resume_state)
+                    self._chunks_processed_in_session = 0
+
+            if resume_state and resume_enabled:
+                resume_state.status = "ready"
+                save_resume_state(Path(self.indexer.storage_dir), resume_state)
             
             # Save final snapshot
             self.snapshot_manager.save_snapshot(dag, {
@@ -347,6 +489,9 @@ class IncrementalIndexer:
         except IndexingCanceled as e:
             logger.warning("%s", e)
             try:
+                if resume_state and resume_enabled:
+                    resume_state.status = "canceled"
+                    save_resume_state(Path(self.indexer.storage_dir), resume_state)
                 self.indexer.save_index(extra_metadata={
                     "project_name": project_name,
                     "project_path": project_path,
@@ -360,6 +505,12 @@ class IncrementalIndexer:
             )
         except Exception as e:
             logger.error(f"Full indexing failed: {e}")
+            try:
+                if resume_state and resume_enabled:
+                    resume_state.status = "failed"
+                    save_resume_state(Path(self.indexer.storage_dir), resume_state)
+            except Exception:
+                pass
             return IncrementalIndexResult(
                 0, 0, 0, 0, 0, time.time() - start_time, False, error=str(e)
             )

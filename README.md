@@ -159,6 +159,7 @@ Environment variables (set in your MCP server config):
 - `CODE_SEARCH_INCLUDE_CONTEXT` (`0`/`1`)
 - `CODE_SEARCH_DISK_WARN_GB` (warn if free disk below this threshold; does not stop indexing)
 - `CODE_SEARCH_LARGE_FILE_MB` (warn on files larger than this size; does not skip by default)
+- `CODE_SEARCH_RESUME` (`0`/`1`): resume interrupted full indexing runs from checkpoint (default on)
 - `CODE_SEARCH_ASYNC_INDEX` (`0`/`1`): force background indexing for `index_directory`
 - `CODE_SEARCH_SYNC_INDEX` (`0`/`1`): force synchronous indexing for `index_directory`
 - `CODE_SEARCH_ASYNC_FILE_THRESHOLD` (file-count heuristic to auto background-index; default ~2500)

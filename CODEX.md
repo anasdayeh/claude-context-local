@@ -95,6 +95,7 @@ codex mcp add claude_context_local -- uv run --directory ~/.local/share/claude-c
 - `CODE_SEARCH_INCLUDE_CONTEXT`: include same-file context in search results.
 - `CODE_SEARCH_DISK_WARN_GB`: warn if free disk below this threshold (warn-only).
 - `CODE_SEARCH_LARGE_FILE_MB`: warn on large files above this size (warn-only).
+- `CODE_SEARCH_RESUME`: resume interrupted full indexing runs from checkpoint (default on; set `0` to disable).
 - `CODE_SEARCH_ASYNC_INDEX`: force `index_directory` to run as a background job (recommended for large repos).
 - `CODE_SEARCH_SYNC_INDEX`: force `index_directory` to block until completion (not recommended for large repos due to Codex tool-call timeouts).
 - `CODE_SEARCH_ASYNC_FILE_THRESHOLD`: file-count heuristic used to auto background-index (default ~2500).
