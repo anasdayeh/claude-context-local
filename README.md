@@ -164,6 +164,9 @@ Environment variables (set in your MCP server config):
 - `CODE_SEARCH_ASYNC_SCAN_SECONDS` (max seconds to spend estimating repo size; default ~2)
 - `CODE_SEARCH_INDEX_WORKERS` (background indexing worker threads; default 1)
 - `CODE_SEARCH_JOB_EVENT_BUFFER` (max stored progress events per job; default 200)
+- `CODE_SEARCH_SHARDED_INDEX` (`0`/`1`): enable sharded FAISS indexes
+- `CODE_SEARCH_SHARD_TARGET_BYTES` (target shard size before rollover; default ~512MB)
+- `CODE_SEARCH_SHARD_MEMORY_CAP_GB` (max RAM budget for loaded shards; default 13)
 
 Interact via chat inside Codex; no function calls or commands are required.
 
