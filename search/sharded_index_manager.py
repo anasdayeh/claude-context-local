@@ -91,7 +91,7 @@ class ShardedIndexManager:
         self._manifest.save(self.manifest_path)
         return shard_id
 
-    def _get_manager(self, shard_id: str) -> CodeIndexManager:
+    def _get_manager(self, shard_id: str, enforce_budget: bool = True) -> CodeIndexManager:
         with self._lock:
             manager = self._managers.get(shard_id)
             if manager is not None:
@@ -99,7 +99,7 @@ class ShardedIndexManager:
             shard_path = self.shards_root / shard_id
             manager = CodeIndexManager(str(shard_path))
             self._managers[shard_id] = manager
-            self._mark_loaded(shard_id, manager.get_storage_bytes())
+            self._mark_loaded(shard_id, manager.get_storage_bytes(), enforce_budget=enforce_budget)
             return manager
 
     def _maybe_rollover(self, current_shard_bytes: int) -> None:
@@ -115,12 +115,13 @@ class ShardedIndexManager:
             return cap_bytes
         return min(cap_bytes, int(available * 0.75))
 
-    def _mark_loaded(self, shard_id: str, bytes_used: int) -> None:
+    def _mark_loaded(self, shard_id: str, bytes_used: int, enforce_budget: bool = True) -> None:
         self._loaded_shards[shard_id] = int(bytes_used)
         if shard_id in self._lru:
             self._lru.remove(shard_id)
         self._lru.append(shard_id)
-        self._enforce_budget()
+        if enforce_budget:
+            self._enforce_budget()
 
     def _enforce_budget(self) -> None:
         if not self._loaded_shards:
@@ -173,16 +174,72 @@ class ShardedIndexManager:
         if not shard_ids:
             return []
 
-        def _search_shard(shard_id: str) -> List[Tuple[str, float, Dict[str, Any]]]:
-            manager = self._get_manager(shard_id)
-            return manager.search(query_embedding, k=k, filters=filters)
+        groups = self._build_shard_groups()
+        all_results: List[List[Tuple[str, float, Dict[str, Any]]]] = []
 
-        results: List[List[Tuple[str, float, Dict[str, Any]]]] = []
-        with ThreadPoolExecutor(max_workers=min(4, len(shard_ids))) as pool:
-            for shard_results in pool.map(_search_shard, shard_ids):
-                results.append(shard_results)
+        for group in groups:
+            self._load_shard_group(group)
 
-        return merge_top_k(results, k)
+            def _search_shard(shard_id: str) -> List[Tuple[str, float, Dict[str, Any]]]:
+                manager = self._get_manager(shard_id, enforce_budget=False)
+                return manager.search(query_embedding, k=k, filters=filters)
+
+            with ThreadPoolExecutor(max_workers=min(4, len(group))) as pool:
+                for shard_results in pool.map(_search_shard, group):
+                    all_results.append(shard_results)
+
+        return merge_top_k(all_results, k)
+
+    def _estimate_shard_bytes(self, shard_id: str) -> int:
+        for shard in self._manifest.shards:
+            if shard["id"] == shard_id:
+                estimate = int(shard.get("index_bytes", 0)) + int(shard.get("metadata_bytes", 0))
+                if estimate > 0:
+                    return estimate
+        # Fallback to on-disk sizes
+        shard_path = self.shards_root / shard_id
+        total = 0
+        for name in ("code.index", "metadata.db", "id_map.db"):
+            p = shard_path / name
+            if p.exists():
+                total += p.stat().st_size
+        return total
+
+    def _build_shard_groups(self) -> List[List[str]]:
+        budget = self._max_bytes or self._compute_budget_bytes()
+        if budget <= 0:
+            return [[shard["id"] for shard in self._manifest.shards]]
+
+        groups: List[List[str]] = []
+        current: List[str] = []
+        current_bytes = 0
+
+        for shard in self._manifest.shards:
+            shard_id = shard["id"]
+            shard_bytes = max(self._estimate_shard_bytes(shard_id), 1)
+            if current and current_bytes + shard_bytes > budget:
+                groups.append(current)
+                current = [shard_id]
+                current_bytes = shard_bytes
+                continue
+            current.append(shard_id)
+            current_bytes += shard_bytes
+
+        if current:
+            groups.append(current)
+
+        return groups
+
+    def _load_shard_group(self, group: List[str]) -> None:
+        # Load required shards without enforcing budget per-shard.
+        for shard_id in group:
+            self._get_manager(shard_id, enforce_budget=False)
+            self._mark_loaded(shard_id, self._estimate_shard_bytes(shard_id), enforce_budget=False)
+        budget = self._max_bytes or self._compute_budget_bytes()
+        if len(group) == 1 and self._estimate_shard_bytes(group[0]) > budget:
+            return
+        # Evict shards not in the group if over budget.
+        self._enforce_budget()
 
     def iter_all_chunks(self) -> Iterable[Tuple[str, Dict[str, Any]]]:
         for shard in self._manifest.shards:
