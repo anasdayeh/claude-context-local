@@ -42,7 +42,7 @@ class ShardedIndexManager:
         self._target_shard_bytes = int(
             os.getenv("CODE_SEARCH_SHARD_TARGET_BYTES", "536870912") or 536870912
         )
-        self._max_bytes = self._compute_budget_bytes()
+        self._max_bytes: Optional[int] = None
 
         self._manifest = self._load_or_init_manifest()
         self._active_shard_id = self._ensure_active_shard()
@@ -126,7 +126,7 @@ class ShardedIndexManager:
     def _enforce_budget(self) -> None:
         if not self._loaded_shards:
             return
-        budget = self._max_bytes or self._compute_budget_bytes()
+        budget = self._max_bytes if self._max_bytes is not None else self._compute_budget_bytes()
         while sum(self._loaded_shards.values()) > budget and self._lru:
             victim = self._lru.pop(0)
             self._loaded_shards.pop(victim, None)
@@ -206,7 +206,7 @@ class ShardedIndexManager:
         return total
 
     def _build_shard_groups(self) -> List[List[str]]:
-        budget = self._max_bytes or self._compute_budget_bytes()
+        budget = self._max_bytes if self._max_bytes is not None else self._compute_budget_bytes()
         if budget <= 0:
             return [[shard["id"] for shard in self._manifest.shards]]
 
@@ -235,7 +235,7 @@ class ShardedIndexManager:
         for shard_id in group:
             self._get_manager(shard_id, enforce_budget=False)
             self._mark_loaded(shard_id, self._estimate_shard_bytes(shard_id), enforce_budget=False)
-        budget = self._max_bytes or self._compute_budget_bytes()
+        budget = self._max_bytes if self._max_bytes is not None else self._compute_budget_bytes()
         if len(group) == 1 and self._estimate_shard_bytes(group[0]) > budget:
             return
         # Evict shards not in the group if over budget.
