@@ -16,6 +16,7 @@ from embeddings.embedder import CodeEmbedder
 from chunking.multi_language_chunker import MultiLanguageChunker
 from search.searcher import IntelligentSearcher
 from mcp_server.index_jobs import IndexJobManager
+from search.sharded_index_manager import ShardedIndexManager
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,8 @@ class CodeSearchServer:
     def __init__(self):
         self.storage_root = get_storage_dir()
         # Default embedder uses local models/ directory if configured in CodeSearchServer init
-        self.embedder = CodeEmbedder(cache_dir=str(self.storage_root / "models"))
+        device = os.getenv("CODE_SEARCH_DEVICE", "auto")
+        self.embedder = CodeEmbedder(cache_dir=str(self.storage_root / "models"), device=device)
         self.chunker = MultiLanguageChunker()
         self._current_project = None
         self._index_manager = None
@@ -78,7 +80,7 @@ class CodeSearchServer:
                 "suggestion": f"Run index_directory('{project_path}') first"
             }
 
-        self._index_manager = CodeIndexManager(str(index_dir))
+        self._index_manager = self._build_index_manager(index_dir)
         self._searcher = IntelligentSearcher(self._index_manager, self.embedder)
         self._current_project = project_path
         
@@ -104,7 +106,7 @@ class CodeSearchServer:
             if not project_name:
                 project_name = Path(directory_path).name
                 
-            index_manager = CodeIndexManager(str(index_dir))
+            index_manager = self._build_index_manager(index_dir)
             # Use MultiLanguageChunker with root path for relative path calculation
             chunker = MultiLanguageChunker(root_path=directory_path)
             indexer = IncrementalIndexer(index_manager, self.embedder, chunker, str(project_dir))
@@ -356,7 +358,7 @@ class CodeSearchServer:
         }
         
         # Load detailed stats if available
-        index_manager = CodeIndexManager(str(index_dir))
+        index_manager = self._build_index_manager(index_dir)
         index_stats = index_manager.get_stats()
         stats.update(index_stats)
         
@@ -424,7 +426,11 @@ class CodeSearchServer:
         project_dir = self.get_project_storage_dir(project_path)
         index_dir = project_dir / "index"
         try:
-            index_manager = CodeIndexManager(str(index_dir))
+            index_manager = self._build_index_manager(index_dir)
+            iterator = getattr(index_manager, "iter_all_chunks", None)
+            if callable(iterator):
+                file_paths = {meta.get("relative_path") or meta.get("file_path") for _, meta in iterator() if isinstance(meta, dict)}
+                return len({p for p in file_paths if p})
             file_paths = set()
             for entry in index_manager.metadata_db.values():
                 meta = entry.get("metadata") if isinstance(entry, dict) else None
@@ -436,6 +442,14 @@ class CodeSearchServer:
             return len(file_paths)
         except Exception:
             return 0
+
+    def _build_index_manager(self, index_dir: Path):
+        """Return a sharded manager when enabled or when manifest exists."""
+        manifest_path = index_dir / "manifest.json"
+        flag = os.getenv("CODE_SEARCH_SHARDED_INDEX", "").lower()
+        if flag in {"1", "true", "yes"} or (flag not in {"0", "false", "no"} and manifest_path.exists()):
+            return ShardedIndexManager(str(index_dir))
+        return CodeIndexManager(str(index_dir))
 
     def _maybe_start_model_preload(self) -> None:
         """Preload the embedding model in background if requested."""

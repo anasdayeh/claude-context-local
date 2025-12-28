@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import heapq
+import json
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -30,6 +30,8 @@ class ShardedIndexManager:
         self.index_root = Path(index_root)
         self.shards_root = self.index_root / "shards"
         self.manifest_path = self.index_root / "manifest.json"
+        self.stats_path = self.index_root / "stats.json"
+        self.storage_dir = str(self.index_root)
         self.shards_root.mkdir(parents=True, exist_ok=True)
 
         self._lock = threading.RLock()
@@ -205,10 +207,23 @@ class ShardedIndexManager:
             manager = self._get_manager(shard["id"])
             manager.save_index(extra_metadata=extra_metadata)
         self._manifest.save(self.manifest_path)
+        self._write_root_stats(extra_metadata=extra_metadata)
 
     def get_stats(self) -> Dict[str, Any]:
+        if self.stats_path.exists():
+            try:
+                return json.loads(self.stats_path.read_text())
+            except Exception:
+                pass
+        return self._compute_root_stats()
+
+    def _compute_root_stats(self) -> Dict[str, Any]:
         total_chunks = 0
         storage_size = 0
+        file_paths = set()
+        chunk_types: Dict[str, int] = {}
+        tag_counts: Dict[str, int] = {}
+
         for shard in self._manifest.shards:
             shard_id = shard["id"]
             manager = self._get_manager(shard_id)
@@ -216,11 +231,64 @@ class ShardedIndexManager:
             total_chunks += int(stats.get("total_chunks", 0))
             storage_size += int(stats.get("storage_size", 0))
             self._update_manifest_for_shard(shard_id, stats)
+
+            for _, meta in manager.metadata_db.items():
+                meta = meta.get("metadata") if isinstance(meta, dict) else None
+                if not isinstance(meta, dict):
+                    continue
+                path = meta.get("relative_path") or meta.get("file_path")
+                if path:
+                    file_paths.add(path)
+                ctype = meta.get("chunk_type")
+                if ctype:
+                    chunk_types[ctype] = chunk_types.get(ctype, 0) + 1
+                tags = meta.get("tags") or []
+                for tag in tags:
+                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
+
+        top_tags = dict(sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)[:20])
+
         return {
             "total_chunks": total_chunks,
+            "files_indexed": len(file_paths),
+            "chunk_types": chunk_types,
+            "top_tags": top_tags,
             "storage_size": storage_size,
             "shard_count": len(self._manifest.shards),
         }
+
+    def _write_root_stats(self, extra_metadata: Optional[Dict[str, Any]] = None) -> None:
+        stats = self._compute_root_stats()
+        if extra_metadata:
+            stats.update(extra_metadata)
+        try:
+            self.stats_path.write_text(json.dumps(stats, indent=2))
+        except Exception:
+            pass
+
+    def clear_index(self) -> None:
+        for shard in self._manifest.shards:
+            manager = self._get_manager(shard["id"])
+            manager.clear_index()
+        # Remove shard directories
+        for shard_dir in self.shards_root.glob("shard_*"):
+            for file in shard_dir.iterdir():
+                try:
+                    file.unlink()
+                except Exception:
+                    pass
+        self._managers = {}
+        self._loaded_shards = {}
+        self._lru = []
+        self._manifest = ShardManifest(
+            version=1,
+            project_path=self._manifest.project_path,
+            embedding_dimension=self._manifest.embedding_dimension,
+            index_type=self._manifest.index_type,
+            shard_count=0,
+            shards=[],
+        )
+        self._manifest.save(self.manifest_path)
 
     def _update_manifest_for_shard(self, shard_id: str, stats: Dict[str, Any]) -> None:
         for shard in self._manifest.shards:
