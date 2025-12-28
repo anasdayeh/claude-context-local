@@ -407,12 +407,20 @@ class CodeIndexManager:
                     return json.load(f)
             except Exception:
                 pass
-        
+
         return {
             'total_chunks': self.index.ntotal if self.index else 0,
             'files_indexed': self._count_indexed_files(),
-            'storage_size': self.index_path.stat().st_size if self.index_path.exists() else 0
+            'storage_size': self.get_storage_bytes(),
         }
+
+    def get_storage_bytes(self) -> int:
+        """Return total on-disk bytes for index + metadata."""
+        total = 0
+        for path in (self.index_path, self.metadata_path, self.id_map_path, self.stats_path):
+            if path.exists():
+                total += path.stat().st_size
+        return total
 
     def get_index_size(self) -> int:
         """Return number of vectors in the index."""
