@@ -2,14 +2,25 @@
 
 from __future__ import annotations
 
+import heapq
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple, Any
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from common_utils import get_available_memory_bytes
 from search.indexer import CodeIndexManager
 from search.shard_manifest import ShardManifest
-from common_utils import get_available_memory_bytes
+
+
+def merge_top_k(results: List[List[Tuple[str, float, Dict[str, Any]]]], k: int) -> List[Tuple[str, float, Dict[str, Any]]]:
+    """Merge ranked shard results into a global top-k list."""
+    merged: List[Tuple[str, float, Dict[str, Any]]] = []
+    for shard_results in results:
+        merged.extend(shard_results)
+    merged.sort(key=lambda item: item[1], reverse=True)
+    return merged[:k]
 
 
 class ShardedIndexManager:
@@ -149,6 +160,45 @@ class ShardedIndexManager:
             manager = self._get_manager(shard_id)
             removed += manager.remove_file_chunks(file_path)
         return removed
+
+    def search(
+        self,
+        query_embedding,
+        k: int = 5,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> List[Tuple[str, float, Dict[str, Any]]]:
+        shard_ids = [shard["id"] for shard in self._manifest.shards]
+        if not shard_ids:
+            return []
+
+        def _search_shard(shard_id: str) -> List[Tuple[str, float, Dict[str, Any]]]:
+            manager = self._get_manager(shard_id)
+            return manager.search(query_embedding, k=k, filters=filters)
+
+        results: List[List[Tuple[str, float, Dict[str, Any]]]] = []
+        with ThreadPoolExecutor(max_workers=min(4, len(shard_ids))) as pool:
+            for shard_results in pool.map(_search_shard, shard_ids):
+                results.append(shard_results)
+
+        return merge_top_k(results, k)
+
+    def iter_all_chunks(self) -> Iterable[Tuple[str, Dict[str, Any]]]:
+        for shard in self._manifest.shards:
+            manager = self._get_manager(shard["id"])
+            for key, entry in manager.metadata_db.items():
+                meta = entry.get("metadata") if isinstance(entry, dict) else None
+                if not isinstance(meta, dict):
+                    continue
+                cid = entry.get("chunk_id") or str(key)
+                yield cid, meta
+
+    def get_chunk_by_id(self, chunk_id: str) -> Optional[Dict[str, Any]]:
+        for shard in self._manifest.shards:
+            manager = self._get_manager(shard["id"])
+            found = manager.get_chunk_by_id(chunk_id)
+            if found:
+                return found
+        return None
 
     def save_index(self, extra_metadata: Optional[Dict[str, Any]] = None) -> None:
         for shard in self._manifest.shards:

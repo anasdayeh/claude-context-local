@@ -244,6 +244,11 @@ class IntelligentSearcher:
 
     def _iter_all_chunks(self):
         """Yield (chunk_id, metadata) pairs from the index metadata store."""
+        iterator = getattr(self.index_manager, "iter_all_chunks", None)
+        if callable(iterator):
+            yield from iterator()
+            return
+
         for key, entry in self.index_manager.metadata_db.items():
             meta = entry.get('metadata') if isinstance(entry, dict) else None
             if not isinstance(meta, dict):
