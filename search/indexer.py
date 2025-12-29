@@ -6,6 +6,7 @@ import logging
 import hashlib
 import sqlite3
 import time
+import threading
 import fnmatch
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
@@ -50,6 +51,7 @@ class CodeIndexManager:
         self._logger = logging.getLogger(__name__)
         self._on_gpu = False
         self._legacy_index_map = None
+        self._fts_lock = threading.Lock()
         
     @property
     def index(self):
@@ -89,6 +91,49 @@ class CodeIndexManager:
                 return None
             self._training_sample = TrainingSampleStore(self.storage_dir, max_vectors=max_vectors)
         return self._training_sample
+
+    def _fts_connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(self.metadata_path))
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout=1000;")
+        return conn
+
+    def _ensure_fts_table(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5("
+            "chunk_id UNINDEXED, path, content, tokenize='unicode61 tokenchars _'"
+            ");"
+        )
+
+    def fts_upsert(self, chunk_id: str, path: str, content: str) -> None:
+        if not chunk_id or not path or not content:
+            return
+        try:
+            with self._fts_lock:
+                with self._fts_connect() as conn:
+                    self._ensure_fts_table(conn)
+                    conn.execute("DELETE FROM chunks_fts WHERE chunk_id = ?", (chunk_id,))
+                    conn.execute(
+                        "INSERT INTO chunks_fts(chunk_id, path, content) VALUES (?, ?, ?)",
+                        (chunk_id, path, content),
+                    )
+        except Exception:
+            pass
+
+    def fts_search(self, query: str, k: int = 5) -> List[Tuple[str, float]]:
+        if not query:
+            return []
+        try:
+            with self._fts_connect() as conn:
+                self._ensure_fts_table(conn)
+                rows = conn.execute(
+                    "SELECT chunk_id, bm25(chunks_fts) AS score "
+                    "FROM chunks_fts WHERE chunks_fts MATCH ? ORDER BY score LIMIT ?",
+                    (query, k),
+                ).fetchall()
+            return [(row[0], float(row[1])) for row in rows]
+        except Exception:
+            return []
 
     def _open_sqlitedict(self, path: Path) -> SqliteDict:
         """Open a SqliteDict with basic corruption recovery."""
