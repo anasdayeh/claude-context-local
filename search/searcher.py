@@ -1,11 +1,13 @@
 """Intelligent search functionality with query optimization."""
 
+import os
 import re
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 
 from search.indexer import CodeIndexManager
+from search.hybrid import normalize_fts_query, rrf_fuse
 from embeddings.embedder import CodeEmbedder
 
 
@@ -126,7 +128,16 @@ class IntelligentSearcher:
             filters: Optional filters
         """
         
-        # Focus on semantic search - our specialty
+        if search_mode == "semantic" or not self._hybrid_enabled():
+            return self._semantic_search(query, k, context_depth, filters)
+
+        if search_mode in {"auto", "hybrid"}:
+            if self._fts_ready():
+                return self._hybrid_search(query, k, context_depth, filters)
+            if self._hybrid_autobuild():
+                self._ensure_fts_async()
+            return self._semantic_search(query, k, context_depth, filters)
+
         return self._semantic_search(query, k, context_depth, filters)
     
     def _semantic_search(
@@ -171,6 +182,75 @@ class IntelligentSearcher:
         # Post-process and rank results
         ranked_results = self._rank_results(search_results, query, intent_tags)
         
+        return ranked_results[:k]
+
+    def _hybrid_enabled(self) -> bool:
+        flag = os.getenv("CODE_SEARCH_HYBRID", "1").lower()
+        return flag not in {"0", "false", "no"}
+
+    def _hybrid_autobuild(self) -> bool:
+        flag = os.getenv("CODE_SEARCH_HYBRID_AUTOBUILD", "1").lower()
+        return flag not in {"0", "false", "no"}
+
+    def _fts_ready(self) -> bool:
+        checker = getattr(self.index_manager, "fts_ready", None)
+        if callable(checker):
+            return bool(checker())
+        return False
+
+    def _ensure_fts_async(self) -> None:
+        builder = getattr(self.index_manager, "ensure_fts_async", None)
+        if callable(builder):
+            builder()
+
+    def _hybrid_search(
+        self,
+        query: str,
+        k: int = 5,
+        context_depth: int = 1,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> List[SearchResult]:
+        optimized_query = self._optimize_query(query)
+        intent_tags = self._detect_query_intent(query)
+
+        query_embedding = self.embedder.embed_query(optimized_query)
+        dense_k = int(os.getenv("CODE_SEARCH_HYBRID_DENSE_K", str(min(k * 10, 200))) or min(k * 10, 200))
+        sparse_k = int(os.getenv("CODE_SEARCH_HYBRID_SPARSE_K", str(min(k * 10, 200))) or min(k * 10, 200))
+        rrf_k = int(os.getenv("CODE_SEARCH_HYBRID_RRF_K", "60") or 60)
+
+        if hasattr(self.index_manager, "search_hybrid"):
+            raw_results = self.index_manager.search_hybrid(
+                optimized_query,
+                query_embedding,
+                k=k,
+                filters=filters,
+                dense_k=dense_k,
+                sparse_k=sparse_k,
+                rrf_k=rrf_k,
+            )
+        else:
+            dense_results = self.index_manager.search(query_embedding, dense_k, filters)
+            dense_ids = [cid for cid, _sim, _meta in dense_results]
+            sparse_ids: List[str] = []
+            normalized_query = normalize_fts_query(optimized_query)
+            if normalized_query:
+                for cid, _score in self.index_manager.fts_search(normalized_query, sparse_k):
+                    sparse_ids.append(cid)
+            fused = rrf_fuse(dense_ids, sparse_ids, rrf_k=rrf_k, top_k=k)
+            raw_results = []
+            for cid, score in fused:
+                meta = self.index_manager.get_chunk_by_id(cid)
+                if meta is not None:
+                    raw_results.append((cid, score, meta))
+
+        search_results = []
+        for chunk_id, similarity, metadata in raw_results:
+            result = self._create_search_result(
+                chunk_id, similarity, metadata, context_depth
+            )
+            search_results.append(result)
+
+        ranked_results = self._rank_results(search_results, query, intent_tags)
         return ranked_results[:k]
     
     def _optimize_query(self, query: str) -> str:

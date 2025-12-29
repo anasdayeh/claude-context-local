@@ -224,6 +224,18 @@ class ShardedIndexManager:
             results.append((cid, score, meta))
         return results
 
+    def fts_ready(self) -> bool:
+        for shard in self._manifest.shards:
+            manager = self._get_manager(shard["id"], enforce_budget=False)
+            if not manager.fts_ready():
+                return False
+        return True
+
+    def ensure_fts_async(self) -> None:
+        for shard in self._manifest.shards:
+            manager = self._get_manager(shard["id"], enforce_budget=False)
+            manager.ensure_fts_async()
+
     def _estimate_shard_bytes(self, shard_id: str) -> int:
         for shard in self._manifest.shards:
             if shard["id"] == shard_id:

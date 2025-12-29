@@ -52,6 +52,7 @@ class CodeIndexManager:
         self._on_gpu = False
         self._legacy_index_map = None
         self._fts_lock = threading.Lock()
+        self._fts_building = False
         
     @property
     def index(self):
@@ -145,6 +146,73 @@ class CodeIndexManager:
                     conn.execute("DELETE FROM chunks_fts WHERE path = ?", (path,))
         except Exception:
             pass
+
+    def fts_ready(self) -> bool:
+        try:
+            with self._fts_connect() as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chunks_fts' LIMIT 1"
+                ).fetchone()
+                if not row:
+                    return False
+                if conn.execute("SELECT 1 FROM chunks_fts LIMIT 1").fetchone():
+                    return True
+        except Exception:
+            return False
+
+        try:
+            for _ in self.metadata_db.items():
+                return False
+        except Exception:
+            return False
+        return True
+
+    def build_fts_from_metadata(self) -> None:
+        try:
+            with self._fts_lock:
+                with self._fts_connect() as conn:
+                    self._ensure_fts_table(conn)
+                    conn.execute("DELETE FROM chunks_fts")
+                    batch: List[Tuple[str, str, str]] = []
+                    for key, entry in self.metadata_db.items():
+                        meta = entry.get("metadata") if isinstance(entry, dict) else None
+                        if not isinstance(meta, dict):
+                            continue
+                        chunk_id = entry.get("chunk_id") or meta.get("chunk_id") or str(key)
+                        path = meta.get("relative_path") or meta.get("file_path")
+                        content = meta.get("content")
+                        if not chunk_id or not path or not content:
+                            continue
+                        batch.append((chunk_id, path, content))
+                        if len(batch) >= 500:
+                            conn.executemany(
+                                "INSERT INTO chunks_fts(chunk_id, path, content) VALUES (?, ?, ?)",
+                                batch,
+                            )
+                            batch.clear()
+                    if batch:
+                        conn.executemany(
+                            "INSERT INTO chunks_fts(chunk_id, path, content) VALUES (?, ?, ?)",
+                            batch,
+                        )
+        except Exception:
+            pass
+
+    def ensure_fts_async(self) -> None:
+        with self._fts_lock:
+            if self._fts_building or self.fts_ready():
+                return
+            self._fts_building = True
+
+        def _run():
+            try:
+                self.build_fts_from_metadata()
+            finally:
+                with self._fts_lock:
+                    self._fts_building = False
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
 
     def _open_sqlitedict(self, path: Path) -> SqliteDict:
         """Open a SqliteDict with basic corruption recovery."""

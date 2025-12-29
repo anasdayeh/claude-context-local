@@ -109,6 +109,14 @@ class CodeSearchServer:
         
         return {"success": True, "project": project_path}
 
+    def current_project_path(self) -> Optional[str]:
+        """Return the currently selected project path.
+
+        This is a small compatibility shim for MCP resources/tools that expect
+        a `current_project_path()` method on the server.
+        """
+        return self._current_project
+
     def _maybe_auto_repair_sharded_index(self, index_dir: Path) -> bool:
         """Auto-repair empty sharded manifest when shard folders exist."""
         shards_root = index_dir / "shards"
@@ -374,7 +382,7 @@ class CodeSearchServer:
                 k=k, 
                 filters=filters, 
                 context_depth=context_depth,
-                search_mode="semantic" if search_mode == "auto" else search_mode
+                search_mode=search_mode
             )
             
             # Map search results to the format expected by the MCP tool
@@ -550,8 +558,20 @@ class CodeSearchServer:
         index_dir = project_dir / "index"
         
         try:
-            index_manager = CodeIndexManager(str(index_dir))
-            index_manager.clear_index()
+            is_current = target_path == self._current_project
+
+            # If we are clearing the active project, clear the currently loaded
+            # manager to ensure in-memory search state can't return stale results.
+            if is_current and self._index_manager is not None:
+                self._index_manager.clear_index()
+            else:
+                index_manager = self._build_index_manager(index_dir)
+                index_manager.clear_index()
+
+            if is_current:
+                self._searcher = None
+                self._index_manager = None
+                self._current_project = None
             return {"success": True, "message": f"Index cleared for {target_path}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
