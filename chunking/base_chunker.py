@@ -143,7 +143,7 @@ class LanguageChunker(ABC):
                     metadata.update(parent_info)
 
                 chunk = TreeSitterChunk(
-                    content=content,
+                    content=self._normalize_chunk_content(content, metadata, node, source_bytes),
                     start_line=start_line,
                     end_line=end_line,
                     node_type=node.type,
@@ -182,3 +182,30 @@ class LanguageChunker(ABC):
             ))
 
         return chunks
+
+    def _normalize_chunk_content(
+        self,
+        content: str,
+        metadata: Dict[str, Any],
+        node: Any,
+        source_bytes: bytes,
+    ) -> str:
+        """Ensure every chunk has non-empty usable content."""
+        if content and content.strip():
+            return content
+
+        candidates = []
+        name = metadata.get("name")
+        if name:
+            candidates.append(str(name))
+        kind = metadata.get("type") or metadata.get("chunk_type") or node.type
+        if kind:
+            candidates.append(str(kind))
+
+        fallback = self.get_node_text(node, source_bytes)
+        if fallback and fallback.strip():
+            candidates.append(fallback.strip())
+
+        if candidates:
+            return " | ".join(dict.fromkeys(candidates))
+        return node.type

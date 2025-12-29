@@ -19,6 +19,198 @@ from mcp_server.code_search_server import CodeSearchServer
 logger = logging.getLogger(__name__)
 
 
+def _load_json_file(path: Path | None) -> dict:
+    if path is None:
+        return {}
+    try:
+        if path.exists():
+            return json.loads(path.read_text())
+    except Exception:
+        pass
+    return {}
+
+
+def _coverage_pct(total: int | None, fts_rows: int | None) -> float | None:
+    try:
+        total = int(total) if total is not None else 0
+        fts_rows = int(fts_rows) if fts_rows is not None else 0
+    except Exception:
+        return None
+    if total > 0:
+        return round((fts_rows / total) * 100, 2)
+    if fts_rows > 0:
+        return 100.0
+    return 0.0
+
+
+def _read_stats_json(server: CodeSearchServer, project_path: str) -> dict:
+    try:
+        project_dir = server.get_project_storage_dir(project_path)
+        stats_path = project_dir / "index" / "stats.json"
+        if not stats_path.exists():
+            return {}
+        return json.loads(stats_path.read_text())
+    except Exception:
+        return {}
+
+
+def _read_manifest_json(server: CodeSearchServer, project_path: str) -> dict:
+    try:
+        project_dir = server.get_project_storage_dir(project_path)
+        manifest_path = project_dir / "index" / "manifest.json"
+        if not manifest_path.exists():
+            return {}
+        return json.loads(manifest_path.read_text())
+    except Exception:
+        return {}
+
+
+def _infer_last_indexed(server: CodeSearchServer, project_path: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    if not project_path:
+        return None, None
+
+    stats = _read_stats_json(server, project_path)
+    li = stats.get("last_indexed")
+    if isinstance(li, str) and li.strip():
+        return li, "stats_json"
+
+    try:
+        project_dir = server.get_project_storage_dir(project_path)
+        index_dir = project_dir / "index"
+        stats_path = index_dir / "stats.json"
+        if stats_path.exists():
+            ts = stats_path.stat().st_mtime
+            return datetime.fromtimestamp(ts).isoformat(), "stats_mtime"
+
+        index_path = index_dir / "code.index"
+        if index_path.exists():
+            ts = index_path.stat().st_mtime
+            return datetime.fromtimestamp(ts).isoformat(), "index_mtime"
+
+        shards_root = index_dir / "shards"
+        if shards_root.exists():
+            newest = None
+            for shard in shards_root.glob("shard_*"):
+                p = shard / "code.index"
+                if not p.exists():
+                    continue
+                mtime = p.stat().st_mtime
+                newest = mtime if newest is None else max(newest, mtime)
+            if newest is not None:
+                return datetime.fromtimestamp(newest).isoformat(), "sharded_index_mtime"
+    except Exception:
+        pass
+
+    return None, None
+
+
+def _shard_summaries(project_dir: Path) -> list[dict]:
+    shards_root = project_dir / "index" / "shards"
+    summaries: list[dict] = []
+    if not shards_root.exists():
+        return summaries
+    for shard_dir in sorted(shards_root.glob("shard_*")):
+        stats = _load_json_file(shard_dir / "stats.json")
+        total_chunks = stats.get("total_chunks")
+        fts_rows = stats.get("fts_rows")
+        coverage = _coverage_pct(total_chunks, fts_rows)
+        shard_warnings: list[str] = []
+        if total_chunks and fts_rows == 0:
+            shard_warnings.append("FTS rows missing in shard.")
+        if coverage is not None and total_chunks and coverage < 40:
+            shard_warnings.append("Shard FTS coverage is low.")
+        summaries.append(
+            {
+                "shard_id": shard_dir.name,
+                "shard_path": str(shard_dir),
+                "code_index_bytes": (shard_dir / "code.index").stat().st_size
+                if (shard_dir / "code.index").exists()
+                else None,
+                "metadata_db_bytes": (shard_dir / "metadata.db").stat().st_size
+                if (shard_dir / "metadata.db").exists()
+                else None,
+                "fts_rows": fts_rows,
+                "total_chunks": total_chunks,
+                "coverage_pct": coverage,
+                "stats": stats,
+                "warnings": shard_warnings,
+            }
+        )
+    return summaries
+
+
+def _build_fts_status_payload(server: CodeSearchServer, project_path: Optional[str]) -> dict:
+    payload: dict[str, Any] = {
+        "project_path": project_path,
+        "project_id": None,
+        "manifest_path": None,
+        "manifest": {},
+        "manifest_index_bytes": 0,
+        "stats_path": None,
+        "stats": {},
+        "total_chunks": None,
+        "fts_rows": None,
+        "coverage_pct": None,
+        "warnings": [],
+        "last_indexed": None,
+        "last_indexed_source": None,
+        "shards": [],
+    }
+    if not project_path:
+        payload["warnings"].append("No project selected.")
+        return payload
+    try:
+        project_dir = server.get_project_storage_dir(project_path)
+    except Exception as exc:
+        payload["warnings"].append(f"Failed to resolve project: {exc}")
+        payload["error"] = str(exc)
+        return payload
+
+    manifest_path = project_dir / "index" / "manifest.json"
+    stats_path = project_dir / "index" / "stats.json"
+    manifest = _read_manifest_json(server, project_path) or {}
+    stats = _read_stats_json(server, project_path) or {}
+    total_chunks = stats.get("total_chunks")
+    fts_rows = stats.get("fts_rows")
+    coverage = _coverage_pct(total_chunks, fts_rows)
+    warnings: list[str] = []
+    if not stats:
+        warnings.append("Stats file missing or unreadable.")
+    if stats.get("sanity_warning"):
+        warnings.append(stats["sanity_warning"])
+    if total_chunks and fts_rows == 0:
+        warnings.append("FTS rows missing despite indexed chunks.")
+    if coverage is not None and total_chunks and coverage < 40:
+        warnings.append("FTS coverage is below 40%.")
+
+    manifest_shards = manifest.get("shards") or []
+    manifest_index_bytes = sum(int(shard.get("index_bytes", 0)) for shard in manifest_shards)
+
+    payload.update(
+        {
+            "project_id": project_dir.name,
+            "manifest_path": str(manifest_path),
+            "manifest": manifest,
+            "manifest_index_bytes": manifest_index_bytes,
+            "stats_path": str(stats_path),
+            "stats": stats,
+            "total_chunks": total_chunks,
+            "fts_rows": fts_rows,
+            "coverage_pct": coverage,
+            "warnings": warnings,
+            "last_indexed": stats.get("last_indexed"),
+            "last_indexed_source": stats.get("last_indexed") and "stats_json",
+            "shards": _shard_summaries(project_dir),
+        }
+    )
+    if not payload["last_indexed"]:
+        inferred, source = _infer_last_indexed(server, project_path)
+        payload["last_indexed"] = inferred
+        payload["last_indexed_source"] = source
+
+    return payload
+
+
 def _extract_progress_token(ctx: Optional[Context]) -> Any | None:
     """Extract progress token from context metadata or attributes."""
     if ctx is None:
@@ -107,56 +299,6 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
         except Exception:
             pass
         return getattr(server, "_current_project", None)
-
-    def _read_stats_json(project_path: str) -> dict:
-        try:
-            project_dir = server.get_project_storage_dir(project_path)
-            stats_path = project_dir / "index" / "stats.json"
-            if not stats_path.exists():
-                return {}
-            return json.loads(stats_path.read_text())
-        except Exception:
-            return {}
-
-    def _infer_last_indexed(project_path: Optional[str]) -> tuple[Optional[str], Optional[str]]:
-        """Return (last_indexed_iso, source). Best-effort and cheap."""
-        if not project_path:
-            return None, None
-
-        stats = _read_stats_json(project_path)
-        li = stats.get("last_indexed")
-        if isinstance(li, str) and li.strip():
-            return li, "stats_json"
-
-        try:
-            project_dir = server.get_project_storage_dir(project_path)
-            index_dir = project_dir / "index"
-            stats_path = index_dir / "stats.json"
-            if stats_path.exists():
-                ts = stats_path.stat().st_mtime
-                return datetime.fromtimestamp(ts).isoformat(), "stats_mtime"
-
-            # Fall back to vector index mtime.
-            index_path = index_dir / "code.index"
-            if index_path.exists():
-                ts = index_path.stat().st_mtime
-                return datetime.fromtimestamp(ts).isoformat(), "index_mtime"
-
-            shards_root = index_dir / "shards"
-            if shards_root.exists():
-                newest = None
-                for shard in shards_root.glob("shard_*"):
-                    p = shard / "code.index"
-                    if not p.exists():
-                        continue
-                    mtime = p.stat().st_mtime
-                    newest = mtime if newest is None else max(newest, mtime)
-                if newest is not None:
-                    return datetime.fromtimestamp(newest).isoformat(), "sharded_index_mtime"
-        except Exception:
-            pass
-
-        return None, None
 
     def _base_meta(*, did_auto_switch: bool | None = None, project_path_used: str | None = None) -> dict:
         active_path = _get_active_project_path()
@@ -343,17 +485,19 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
         env_include_context = os.getenv("CODE_SEARCH_INCLUDE_CONTEXT", "").lower() in {"1", "true", "yes"}
         include_context_effective = bool(include_context or env_include_context)
 
-        stats = _read_stats_json(after_project) if after_project else {}
+        stats = _read_stats_json(server, after_project) if after_project else {}
         index_last_indexed = stats.get("last_indexed")
         index_last_indexed_source = "stats_json" if index_last_indexed else None
         if not index_last_indexed:
-            index_last_indexed, index_last_indexed_source = _infer_last_indexed(after_project)
+            index_last_indexed, index_last_indexed_source = _infer_last_indexed(server, after_project)
         index_id = None
         if after_project:
             try:
                 index_id = server.get_project_storage_dir(after_project).name
             except Exception:
                 index_id = None
+        manifest = _read_manifest_json(server, after_project) if after_project else {}
+        manifest_version = manifest.get("version")
 
         results_list = coerced.get("results") or []
         meta = _base_meta(did_auto_switch=did_auto_switch, project_path_used=after_project)
@@ -369,11 +513,27 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
                 "index_id": index_id,
                 "index_last_indexed": index_last_indexed,
                 "index_last_indexed_source": index_last_indexed_source,
+                "manifest_version": manifest_version,
                 "include_context_requested": bool(include_context),
                 "include_context_effective": include_context_effective,
                 "context_depth": 1 if include_context_effective else 0,
+                "stats_storage_size": stats.get("storage_size"),
             }
         )
+        fts_info = _build_fts_status_payload(server, after_project)
+        meta.setdefault("fts_status", fts_info)
+        meta.setdefault("fts_coverage_pct", fts_info.get("coverage_pct"))
+        meta.setdefault("fts_rows", fts_info.get("fts_rows"))
+        meta.setdefault("total_chunks", fts_info.get("total_chunks"))
+        manifest_info = fts_info.get("manifest") if isinstance(fts_info, dict) else {}
+        if not isinstance(manifest_info, dict):
+            manifest_info = {}
+        meta.setdefault("manifest_project_path", manifest_info.get("project_path"))
+        meta.setdefault("manifest_path", fts_info.get("manifest_path"))
+        meta.setdefault("manifest_index_bytes", fts_info.get("manifest_index_bytes"))
+        meta.setdefault("stats_path", fts_info.get("stats_path"))
+        meta.setdefault("last_indexed", fts_info.get("last_indexed"))
+        meta.setdefault("last_indexed_source", fts_info.get("last_indexed_source"))
 
         return _augment_dict_response(
             tool_name="search_code",
@@ -597,6 +757,20 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
                 meta=meta,
             )
         return coerced
+
+    @mcp.tool(description="Show manifest, stats, and shard-level FTS coverage")
+    async def fts_status(
+        project_path: str | None = None,
+        ctx: Optional[Context] = None,
+    ) -> dict:
+        target_path = project_path or _get_active_project_path()
+        payload = _build_fts_status_payload(server, target_path)
+        return _augment_dict_response(
+            tool_name="fts_status",
+            response=payload,
+            meta=_base_meta(project_path_used=target_path),
+            result_value=payload,
+        )
 
     @mcp.tool(description=strings.get("tools", {}).get("list_projects", "List projects"))
     async def list_projects(ctx: Optional[Context] = None) -> dict:

@@ -375,6 +375,7 @@ class ShardedIndexManager:
             "chunk_types": chunk_types,
             "top_tags": top_tags,
             "storage_size": storage_size,
+            "fts_rows": sum(self._get_manager(shard["id"])._get_fts_row_count() for shard in self._manifest.shards),
             "shard_count": len(self._manifest.shards),
         }
         if total_chunks == 0 and (file_paths or chunk_types or tag_counts):

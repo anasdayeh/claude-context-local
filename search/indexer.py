@@ -53,7 +53,27 @@ class CodeIndexManager:
         self._legacy_index_map = None
         self._fts_lock = threading.Lock()
         self._fts_building = False
-        
+
+    def _resolve_fts_content(self, result: "EmbeddingResult") -> str:
+        """Return a reusable content string (non-empty) for FTS insertion."""
+        metadata = result.metadata or {}
+        content = metadata.get("content") or ""
+        if content and content.strip():
+            return content
+        chunk_content = result.chunk.content if result.chunk else ""
+        if chunk_content and chunk_content.strip():
+            return chunk_content
+        name = metadata.get("name")
+        if name:
+            return str(name)
+        chunk_type = metadata.get("chunk_type") or metadata.get("type")
+        if chunk_type:
+            return str(chunk_type)
+        path = metadata.get("relative_path") or metadata.get("file_path")
+        if path:
+            return str(path)
+        return ""
+
     @property
     def index(self):
         """Lazy loading of FAISS index."""
@@ -167,6 +187,15 @@ class CodeIndexManager:
             return False
         return True
 
+    def _get_fts_row_count(self) -> int:
+        try:
+            with self._fts_connect() as conn:
+                self._ensure_fts_table(conn)
+                row = conn.execute("SELECT count(*) FROM chunks_fts").fetchone()
+                return int(row[0]) if row else 0
+        except Exception:
+            return 0
+
     def build_fts_from_metadata(self) -> None:
         try:
             with self._fts_lock:
@@ -181,6 +210,12 @@ class CodeIndexManager:
                         chunk_id = entry.get("chunk_id") or meta.get("chunk_id") or str(key)
                         path = meta.get("relative_path") or meta.get("file_path")
                         content = meta.get("content")
+                        if not content:
+                            content = meta.get("content_preview")
+                        if not content:
+                            content = meta.get("name")
+                        if not content:
+                            content = meta.get("chunk_type") or meta.get("type")
                         if not chunk_id or not path or not content:
                             continue
                         batch.append((chunk_id, path, content))
@@ -395,7 +430,7 @@ class CodeIndexManager:
                 'metadata': result.metadata
             }
             path = result.metadata.get("relative_path") or result.metadata.get("file_path")
-            content = result.metadata.get("content")
+            content = self._resolve_fts_content(result)
             if path and content:
                 fts_entries.append((result.chunk_id, path, content))
             new_key = self._normalize_file_key(result.metadata)
@@ -685,6 +720,7 @@ class CodeIndexManager:
             'chunk_types': chunk_types,
             'top_tags': top_tags,
             'storage_size': self.get_storage_bytes(),
+            'fts_rows': self._get_fts_row_count(),
             'last_updated': time.time()
         }
         stats.update(self._get_index_metadata())

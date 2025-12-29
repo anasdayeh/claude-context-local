@@ -148,6 +148,14 @@ uv run --directory ~/.local/share/claude-context-local \
 This uses the same storage/artifacts as the MCP server, so Codex can search immediately once it finishes.
 Running via `uv run --directory ~/.local/share/claude-context-local` reuses the canonical MCP environment and uv cache (no extra venvs).
 
+To verify the post-index health (FTS coverage, manifest/stats metadata, per-shard sizes) without re-running indexing, use:
+
+```
+/Users/anasdayeh/.local/share/claude-context-local/scripts/check_cs_rag_fts.sh
+```
+
+The script prints both JSON and human-friendly summaries and now includes manifest/version details, stats storage size, total FTS rows, and per-shard metrics by default (no extra flags required).
+
 ### Repair a broken sharded manifest (no reindex)
 
 If a sharded index exists but the manifest is empty/missing, you can repair it:
