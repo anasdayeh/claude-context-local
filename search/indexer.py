@@ -214,6 +214,13 @@ class CodeIndexManager:
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
 
+    def apply_filters(
+        self,
+        results: List[Tuple[str, float, Dict[str, Any]]],
+        filters: Dict[str, Any],
+    ) -> List[Tuple[str, float, Dict[str, Any]]]:
+        return self._apply_filters(results, filters)
+
     def _open_sqlitedict(self, path: Path) -> SqliteDict:
         """Open a SqliteDict with basic corruption recovery."""
         def _open():

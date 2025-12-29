@@ -34,6 +34,8 @@ class SearchResult:
         item = {
             "file": self.relative_path,
             "lines": f"{self.start_line}-{self.end_line}",
+            "start_line": self.start_line,
+            "end_line": self.end_line,
             "kind": self.chunk_type,
             "score": round(self.similarity_score, 2),
             "chunk_id": self.chunk_id,
@@ -50,6 +52,8 @@ class SearchResult:
         return {
             "file_path": self.relative_path,
             "lines": f"{self.start_line}-{self.end_line}",
+            "start_line": self.start_line,
+            "end_line": self.end_line,
             "chunk_type": self.chunk_type,
             "name": self.name,
             "similarity_score": round(self.similarity_score, 3),
@@ -242,6 +246,10 @@ class IntelligentSearcher:
                 meta = self.index_manager.get_chunk_by_id(cid)
                 if meta is not None:
                     raw_results.append((cid, score, meta))
+            if filters:
+                raw_results = self.index_manager.apply_filters(raw_results, filters)
+                raw_results.sort(key=lambda item: item[1], reverse=True)
+                raw_results = raw_results[:k]
 
         search_results = []
         for chunk_id, similarity, metadata in raw_results:

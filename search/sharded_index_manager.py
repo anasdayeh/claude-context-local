@@ -222,6 +222,10 @@ class ShardedIndexManager:
             if meta is None:
                 continue
             results.append((cid, score, meta))
+        if filters:
+            results = self.active_manager().apply_filters(results, filters)
+            results.sort(key=lambda item: item[1], reverse=True)
+            results = results[:k]
         return results
 
     def fts_ready(self) -> bool:
