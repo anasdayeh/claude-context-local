@@ -116,6 +116,11 @@ codex mcp add claude_context_local -- uv run --directory ~/.local/share/claude-c
 - `CODE_SEARCH_TRAIN_SAMPLE_MAX`: max training sample vectors stored for IVF readiness (default 25000).
 - `CODE_SEARCH_TORCH_BEFORE_FAISS`: Force torch import before FAISS on startup (`true`/`false`).
 - `CODE_SEARCH_IGNORE_DIRS`: comma-separated extra ignore patterns for indexing/merkle.
+- `CODE_SEARCH_HYBRID`: enable hybrid BM25 + vector search when available.
+- `CODE_SEARCH_HYBRID_RRF_K`: RRF fusion k value (default 60).
+- `CODE_SEARCH_HYBRID_DENSE_K`: dense candidate count (default 50).
+- `CODE_SEARCH_HYBRID_SPARSE_K`: sparse candidate count (default 50).
+- `CODE_SEARCH_HYBRID_AUTOBUILD`: background FTS build on fallback (default on).
 - `HF_HUB_OFFLINE`: force offline model loading.
 
 ## Architecture
