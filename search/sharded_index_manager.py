@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from common_utils import get_available_memory_bytes
 from search.indexer import CodeIndexManager
+from search.hybrid import normalize_fts_query, rrf_fuse
 from search.shard_manifest import ShardManifest
 
 
@@ -190,6 +191,38 @@ class ShardedIndexManager:
                     all_results.append(shard_results)
 
         return merge_top_k(all_results, k)
+
+    def search_hybrid(
+        self,
+        query_text: str,
+        query_embedding,
+        k: int = 5,
+        filters: Optional[Dict[str, Any]] = None,
+        dense_k: Optional[int] = None,
+        sparse_k: Optional[int] = None,
+        rrf_k: int = 60,
+    ) -> List[Tuple[str, float, Dict[str, Any]]]:
+        dense_limit = dense_k or k
+        sparse_limit = sparse_k or k
+        dense_results = self.search(query_embedding, k=dense_limit, filters=filters)
+        dense_ids = [cid for cid, _sim, _meta in dense_results]
+
+        normalized_query = normalize_fts_query(query_text)
+        sparse_ids: List[str] = []
+        if normalized_query:
+            for shard in self._manifest.shards:
+                manager = self._get_manager(shard["id"], enforce_budget=False)
+                for cid, _score in manager.fts_search(normalized_query, k=sparse_limit):
+                    sparse_ids.append(cid)
+
+        fused = rrf_fuse(dense_ids, sparse_ids, rrf_k=rrf_k, top_k=k)
+        results: List[Tuple[str, float, Dict[str, Any]]] = []
+        for cid, score in fused:
+            meta = self.get_chunk_by_id(cid)
+            if meta is None:
+                continue
+            results.append((cid, score, meta))
+        return results
 
     def _estimate_shard_bytes(self, shard_id: str) -> int:
         for shard in self._manifest.shards:
