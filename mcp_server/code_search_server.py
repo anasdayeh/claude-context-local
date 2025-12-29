@@ -433,9 +433,9 @@ class CodeSearchServer:
         
         return stats
 
-    def get_index_status(self) -> Dict[str, Any]:
+    def get_index_status(self, project_path: str = None) -> Dict[str, Any]:
         """Alias for get_stats with additional model info."""
-        stats = self.get_stats()
+        stats = self.get_stats(project_path=project_path)
         if "error" in stats:
             return stats
 
@@ -575,6 +575,64 @@ class CodeSearchServer:
             return {"success": True, "message": f"Index cleared for {target_path}"}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+    def get_chunk(
+        self,
+        chunk_id: str,
+        *,
+        include_content: bool = True,
+        context_depth: int = 0,
+        max_content_chars: int = 8000,
+        max_context_items: int = 6,
+        project_path: str = None,
+    ) -> Dict[str, Any]:
+        """Get full chunk metadata/content by chunk_id.
+
+        Backwards compatible additive tool: does not change existing tool outputs.
+        """
+        if project_path:
+            switch_res = self.switch_project(project_path)
+            if "error" in switch_res:
+                return switch_res
+
+        if not self._index_manager or not self._current_project:
+            return {"error": "No project selected. Provide project_path or run index_directory first."}
+
+        meta = self._index_manager.get_chunk_by_id(chunk_id)  # type: ignore[union-attr]
+        if not meta:
+            return {
+                "error": f"Chunk not found: {chunk_id}",
+                "suggestion": "Verify chunk_id and project selection; use search_code to discover chunk_ids.",
+            }
+
+        chunk_meta = dict(meta)
+        content = chunk_meta.get("content")
+        if not include_content and "content" in chunk_meta:
+            chunk_meta.pop("content", None)
+        elif include_content and isinstance(content, str) and max_content_chars > 0:
+            if len(content) > max_content_chars:
+                chunk_meta["content"] = content[: max(0, max_content_chars)] + "..."
+
+        # Minimal consistent identifiers
+        chunk_meta.setdefault("chunk_id", chunk_id)
+        chunk_meta.setdefault("relative_path", chunk_meta.get("relative_path") or chunk_meta.get("file_path"))
+        chunk_meta.setdefault("chunk_type", chunk_meta.get("chunk_type") or chunk_meta.get("kind"))
+
+        context = []
+        if context_depth and self._searcher:
+            try:
+                rel = chunk_meta.get("relative_path") or ""
+                neighbors = self._searcher._get_file_neighbors(chunk_id, rel, window=max(0, int(context_depth)))  # type: ignore[attr-defined]
+                if isinstance(neighbors, list):
+                    context = neighbors[: max(0, int(max_context_items))]
+            except Exception:
+                context = []
+
+        return {
+            "chunk_id": chunk_id,
+            "chunk": chunk_meta,
+            "context": context,
+        }
 
     def index_test_project(self) -> Dict[str, Any]:
         """Index a small test dataset for verification."""

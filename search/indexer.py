@@ -627,6 +627,8 @@ class CodeIndexManager:
                     stats = json.load(f)
                     stats.update(self._get_index_metadata())
                     stats.update(self._get_training_sample_stats())
+                    # Always refresh storage size from disk for accuracy.
+                    stats["storage_size"] = self.get_storage_bytes()
                     self._apply_sanity_warning(stats)
                     return stats
             except Exception:
@@ -682,6 +684,7 @@ class CodeIndexManager:
             'files_indexed': files_indexed,
             'chunk_types': chunk_types,
             'top_tags': top_tags,
+            'storage_size': self.get_storage_bytes(),
             'last_updated': time.time()
         }
         stats.update(self._get_index_metadata())

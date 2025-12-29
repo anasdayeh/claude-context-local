@@ -490,6 +490,22 @@ class ShardedIndexManager:
         self._write_root_stats()
 
     def _update_manifest_for_shard(self, shard_id: str, stats: Dict[str, Any]) -> None:
+        # Fill in manifest-level metadata when available.
+        project_path = stats.get("project_path")
+        if project_path and not self._manifest.project_path:
+            self._manifest.project_path = project_path
+
+        embedding_dim = stats.get("embedding_dim")
+        if embedding_dim and not self._manifest.embedding_dimension:
+            try:
+                self._manifest.embedding_dimension = int(embedding_dim)
+            except Exception:
+                pass
+
+        index_type = stats.get("index_type")
+        if index_type and self._manifest.index_type in {"", "flat"}:
+            self._manifest.index_type = index_type
+
         for shard in self._manifest.shards:
             if shard["id"] == shard_id:
                 shard["vector_count"] = int(stats.get("total_chunks", 0))

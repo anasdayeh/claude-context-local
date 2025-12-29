@@ -1,0 +1,129 @@
+Traceback (most recent call last):
+  File "/Users/anasdayeh/.local/share/claude-context-local/scripts/index_repo.py", line 19, in <module>
+    from mcp_server.code_search_server import CodeSearchServer
+  File "/Users/anasdayeh/.local/share/claude-context-local/mcp_server/code_search_server.py", line 14, in <module>
+    from search.indexer import CodeIndexManager
+  File "/Users/anasdayeh/.local/share/claude-context-local/search/indexer.py", line 14, in <module>
+    import faiss
+ModuleNotFoundError: No module named 'faiss'
+/usr/local/bin/python3: can't find '__main__' module in '/Users/anasdayeh/.local/'
+Provide a command or script to invoke with `uv run <command>` or `uv run <script>.py`.
+
+The following commands are available in the environment:
+
+- backend-test-tools
+- check-model
+- check-node
+- coloredlogs
+- coverage
+- coverage-3.13
+- coverage3
+- cyclopts
+- docket
+- docutils
+- dotenv
+- email_validator
+- f2py
+- fastmcp
+- hf
+- httpx
+- huggingface-cli
+- humanfriendly
+- isympy
+- jsonschema
+- keyring
+- markdown-it
+- mcp
+- normalizer
+- numpy-config
+- onnxruntime_test
+- opentelemetry-bootstrap
+- opentelemetry-instrument
+- optimum-cli
+- py.test
+- pygmentize
+- pytest
+- python
+- python3
+- python3.13
+- rst2html
+- rst2html4
+- rst2html5
+- rst2latex
+- rst2man
+- rst2odt
+- rst2pseudoxml
+- rst2s5
+- rst2xetex
+- rst2xml
+- tiny-agents
+- torchfrtrace
+- torchrun
+- tqdm
+- transformers
+- transformers-cli
+- typer
+- uvicorn
+- websockets
+
+See `uv run --help` for more information.
+Provide a command or script to invoke with `uv run <command>` or `uv run <script>.py`.
+
+The following commands are available in the environment:
+
+- backend-test-tools
+- check-model
+- check-node
+- coloredlogs
+- coverage
+- coverage-3.13
+- coverage3
+- cyclopts
+- docket
+- docutils
+- dotenv
+- email_validator
+- f2py
+- fastmcp
+- hf
+- httpx
+- huggingface-cli
+- humanfriendly
+- isympy
+- jsonschema
+- keyring
+- markdown-it
+- mcp
+- normalizer
+- numpy-config
+- onnxruntime_test
+- opentelemetry-bootstrap
+- opentelemetry-instrument
+- optimum-cli
+- py.test
+- pygmentize
+- pytest
+- python
+- python3
+- python3.13
+- rst2html
+- rst2html4
+- rst2html5
+- rst2latex
+- rst2man
+- rst2odt
+- rst2pseudoxml
+- rst2s5
+- rst2xetex
+- rst2xml
+- tiny-agents
+- torchfrtrace
+- torchrun
+- tqdm
+- transformers
+- transformers-cli
+- typer
+- uvicorn
+- websockets
+
+See `uv run --help` for more information.
