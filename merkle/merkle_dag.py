@@ -84,6 +84,9 @@ class MerkleDAG:
             True if path should be ignored
         """
         name = path.name
+
+        if path.is_dir() and name.startswith('.'):
+            return True
          
         # Check exact matches and patterns
         for pattern in self.ignore_patterns:

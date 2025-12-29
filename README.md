@@ -31,7 +31,7 @@ Codex Context without the cloud. Semantic code search that runs 100% locally usi
 - 💰 **Zero API costs - forever free**
 - ⚡ **Fewer tokens in Codex and fast local searches**
 
-An intelligent code search system that uses Google's EmbeddingGemma model and advanced multi-language chunking to provide semantic search capabilities across 15 file extensions and 9+ programming languages, integrated with Codex via MCP (Model Context Protocol).
+An intelligent code search system that uses Google's EmbeddingGemma model and advanced multi-language chunking to provide semantic search across modern codebases, integrated with Codex via MCP (Model Context Protocol).
 
 ## 🚧 Beta Release
 
@@ -46,13 +46,15 @@ An intelligent code search system that uses Google's EmbeddingGemma model and ad
 
 ## Features
 
-- **Multi-language support**: 9+ programming languages with 15 file extensions
-- **Intelligent chunking**: AST-based (Python) + tree-sitter (JS/TS/Go/Java/Rust/C/C++/C#)
-- **Semantic search**: Natural language queries to find code across all languages
-- **Rich metadata**: File paths, folder structure, semantic tags, language-specific info
-- **MCP integration**: Direct integration with Codex
+- **Multi-language support**: Tree-sitter chunking for major languages + text fallback for config/docs/data files
+- **Intelligent chunking**: AST/Tree-sitter nodes mapped to semantic chunk types
+- **Semantic search**: Natural language queries with intent-aware ranking
+- **Rich metadata**: File paths, folder structure, names, docstrings, tags, language traits
+- **Incremental indexing**: Merkle DAG + snapshots detect changes fast
+- **Resume-on-interrupt**: Full indexing resumes from checkpoints by default
+- **Sharded FAISS**: Multiple index shards with memory-aware loading
 - **Local processing**: All embeddings stored locally, no API calls
-- **Fast search**: FAISS for efficient similarity search
+- **MCP integration**: Direct Codex tools for index/search/jobs
 
 ## Why this
 
@@ -62,7 +64,7 @@ Codex’s code context is powerful, but sending your code to the cloud costs tok
 
 - Python 3.13+ (Required for macOS ARM support)
 - Disk: 1–2 GB free (model + caches + index)
-- Optional: NVIDIA GPU (CUDA 11/12) for FAISS acceleration; Apple Silicon (MPS) for embedding acceleration. These also speed up running the embedding model with SentenceTransformer, but everything still works on CPU.
+- Optional: NVIDIA GPU (CUDA 11/12) for FAISS acceleration; Apple Silicon (MPS) for embedding acceleration. Everything still works on CPU.
 
 ## Install & Update
 
@@ -125,26 +127,40 @@ Open Codex and say: index this codebase. No manual commands needed.
 If you want to run indexing yourself (overnight, no token usage), use the MCP pipeline CLI:
 
 ```bash
-uv run --directory ~/.local/share/claude-context-local \\
-  python scripts/index_repo.py /path/to/repo \\
-  --project-name MyRepo \\
-  --sharded \\
+uv run --directory ~/.local/share/claude-context-local \
+  python scripts/index_repo.py /path/to/repo \
+  --project-name MyRepo \
+  --sharded \
   --log-file ~/code_search_index.log
 ```
 
 Background + polling:
 
 ```bash
-uv run --directory ~/.local/share/claude-context-local \\
-  python scripts/index_repo.py /path/to/repo \\
-  --project-name MyRepo \\
-  --sharded \\
-  --background \\
+uv run --directory ~/.local/share/claude-context-local \
+  python scripts/index_repo.py /path/to/repo \
+  --project-name MyRepo \
+  --sharded \
+  --background \
   --log-file ~/code_search_index.log
 ```
 
 This uses the same storage/artifacts as the MCP server, so Codex can search immediately once it finishes.
 Running via `uv run --directory ~/.local/share/claude-context-local` reuses the canonical MCP environment and uv cache (no extra venvs).
+
+### Repair a broken sharded manifest (no reindex)
+
+If a sharded index exists but the manifest is empty/missing, you can repair it:
+
+```bash
+uv run --directory ~/.local/share/claude-context-local \
+  python scripts/index_repo.py /path/to/repo \
+  --repair
+```
+
+If you try to search a project with shards present but an empty manifest, the MCP will
+auto-repair on `switch_project` and log a warning. `switch_project` also accepts healthy
+sharded indexes (manifest + shard `code.index` files) without requiring a root `code.index`.
 
 ## Configuration
 
@@ -152,23 +168,31 @@ Environment variables (set in your MCP server config):
 
 - `CODE_SEARCH_STORAGE` (default: `~/.claude_code_search`)
 - `CODE_SEARCH_DATA_DIR` (alias for `CODE_SEARCH_STORAGE`)
-- `CODE_SEARCH_DEVICE` (`cpu`, `mps`, `cuda`)
+- `CODE_SEARCH_DEVICE` (`cpu`, `mps`, `cuda`, `auto`)
 - `CODE_SEARCH_PRELOAD_MODEL` (`0`/`1`)
-- `CODE_SEARCH_CHUNK_BATCH_SIZE` (chunking batch size)
-- `CODE_SEARCH_EMBED_BATCH_SIZE` (embedding batch size)
-- `CODE_SEARCH_INCLUDE_CONTEXT` (`0`/`1`)
-- `CODE_SEARCH_DISK_WARN_GB` (warn if free disk below this threshold; does not stop indexing)
-- `CODE_SEARCH_LARGE_FILE_MB` (warn on files larger than this size; does not skip by default)
+- `CODE_SEARCH_LOG_LEVEL` (`DEBUG`/`INFO`/`WARNING`/`ERROR`/`CRITICAL`)
+- `CODE_SEARCH_LOG_FILE` (path to a logfile; defaults to stderr if unset)
+- `CODE_SEARCH_CHUNK_BATCH_SIZE` (chunking batch size; default 100)
+- `CODE_SEARCH_BATCH_SIZE` (legacy embed batch size fallback)
+- `CODE_SEARCH_EMBED_BATCH_SIZE` (embedding batch size; falls back to `CODE_SEARCH_BATCH_SIZE`)
+- `CODE_SEARCH_INCLUDE_CONTEXT` (`0`/`1`) include same-file neighbors in results
+- `CODE_SEARCH_DISK_WARN_GB` (warn if free disk below this threshold; warn-only)
+- `CODE_SEARCH_LARGE_FILE_MB` (warn on files larger than this size; warn-only)
+- `CODE_SEARCH_PROGRESS_EVERY_FILES` (emit rate-limited progress events every N files; default 50)
 - `CODE_SEARCH_RESUME` (`0`/`1`): resume interrupted full indexing runs from checkpoint (default on)
 - `CODE_SEARCH_ASYNC_INDEX` (`0`/`1`): force background indexing for `index_directory`
 - `CODE_SEARCH_SYNC_INDEX` (`0`/`1`): force synchronous indexing for `index_directory`
-- `CODE_SEARCH_ASYNC_FILE_THRESHOLD` (file-count heuristic to auto background-index; default ~2500)
-- `CODE_SEARCH_ASYNC_SCAN_SECONDS` (max seconds to spend estimating repo size; default ~2)
-- `CODE_SEARCH_INDEX_WORKERS` (background indexing worker threads; default 1)
+- `CODE_SEARCH_ASYNC_FILE_THRESHOLD` (auto background-index if file count exceeds this; default ~2500)
+- `CODE_SEARCH_ASYNC_SCAN_SECONDS` (max seconds to scan repo size before defaulting to background; default ~2)
+- `CODE_SEARCH_INDEX_WORKERS` (background indexing workers; default 2; restart MCP to apply)
 - `CODE_SEARCH_JOB_EVENT_BUFFER` (max stored progress events per job; default 200)
 - `CODE_SEARCH_SHARDED_INDEX` (`0`/`1`): enable sharded FAISS indexes
 - `CODE_SEARCH_SHARD_TARGET_BYTES` (target shard size before rollover; default ~512MB)
 - `CODE_SEARCH_SHARD_MEMORY_CAP_GB` (max RAM budget for loaded shards; default 13)
+- `CODE_SEARCH_TRAIN_SAMPLE_MAX` (max training sample vectors stored for IVF readiness; default 25000)
+- `CODE_SEARCH_TORCH_BEFORE_FAISS` (`true`/`false`) force torch import before FAISS on startup
+- `CODE_SEARCH_IGNORE_DIRS` (comma-separated extra ignore patterns for indexing/merkle)
+- `HF_HUB_OFFLINE` (`1` to force offline model loading)
 
 Interact via chat inside Codex; no function calls or commands are required.
 
@@ -176,26 +200,31 @@ Interact via chat inside Codex; no function calls or commands are required.
 
 ```
 claude-context-local/
-├── chunking/                         # Multi-language chunking (15 extensions)
-│   ├── multi_language_chunker.py     # Unified orchestrator (Python AST + tree-sitter)
-│   ├── python_ast_chunker.py         # Python-specific chunking (rich metadata)
-│   └── tree_sitter.py                # Tree-sitter: JS/TS/JSX/TSX/Svelte/Go/Java/Rust/C/C++/C#
+├── chunking/                         # Multi-language chunking (Tree-sitter + text fallback)
+│   ├── multi_language_chunker.py     # Unified orchestrator
+│   ├── tree_sitter.py                # Tree-sitter chunker
+│   ├── base_chunker.py               # Language chunker base + TreeSitterChunk
+│   ├── languages/                    # Language-specific chunkers
+│   └── text_chunker.py               # Text fallback chunker
 ├── embeddings/
-│   └── embedder.py                   # EmbeddingGemma; device=auto (CUDA→MPS→CPU); offline cache
+│   └── embedder.py                   # EmbeddingGemma wrapper + batching + OOM backoff
 ├── search/
-│   ├── indexer.py                    # FAISS index (CPU by default; GPU when available)
-│   ├── searcher.py                   # Intelligent ranking & filters
-│   └── incremental_indexer.py        # Merkle-driven incremental indexing
+│   ├── indexer.py                    # FAISS index + metadata storage
+│   ├── sharded_index_manager.py      # Sharded FAISS manager + memory budget
+│   ├── searcher.py                   # Semantic search + intent ranking
+│   ├── incremental_indexer.py        # Merkle-driven incremental indexing
+│   └── resume_state.py               # Resume-from-checkpoint state
 ├── merkle/
 │   ├── merkle_dag.py                 # Content-hash DAG of the workspace
 │   ├── change_detector.py            # Diffs snapshots to find changed files
-│   └── snapshot_manager.py           # Snapshot persistence & stats
+│   └── snapshot_manager.py           # Snapshot persistence
 ├── mcp_server/
-│   └── server.py                     # MCP tools for Codex (stdio/HTTP)
+│   ├── server.py                     # MCP entrypoint (stdio/http)
+│   └── mcp_tools.py                  # MCP tool registration
 └── scripts/
     ├── install.sh                    # One-liner remote installer (uv + model + faiss)
     ├── download_model_standalone.py  # Pre-fetch embedding model
-    └── index_codebase.py             # Standalone indexing utility
+    └── index_repo.py                 # Offline indexing pipeline
 ```
 
 ### Data flow
@@ -204,138 +233,125 @@ claude-context-local/
 graph TD
     A["Codex (MCP client)"] -->|index_directory| B["MCP Server"]
     B --> C{IncrementalIndexer}
-    C --> D["ChangeDetector<br/>(Merkle DAG)"]
-    C --> E["MultiLanguageChunker"]
-    E --> F["Code Chunks"]
-    C --> G["CodeEmbedder<br/>(EmbeddingGemma)"]
-    G --> H["Embeddings"]
-    C --> I["CodeIndexManager<br/>(FAISS CPU/GPU)"]
-    H --> I
-    D --> J["SnapshotManager"]
-    C --> J
-    B -->|search_code| K["Searcher"]
-    K --> I
+    C --> D["Merkle DAG"]
+    C --> E["ChangeDetector"]
+    C --> F["MultiLanguageChunker"]
+    F --> G["Code Chunks"]
+    C --> H["CodeEmbedder"]
+    H --> I["Embeddings"]
+    C --> J["CodeIndexManager / ShardedIndexManager"]
+    I --> J
+    C --> K["SnapshotManager"]
+    B -->|search_code| L["IntelligentSearcher"]
+    L --> J
 ```
 
-## Intelligent Chunking
+### Storage layout
 
-The system uses advanced parsing to create semantically meaningful chunks across all supported languages:
-
-### Chunking Strategies
-
-- **Python**: AST-based parsing for rich metadata extraction
-- **All other languages**: Tree-sitter parsing with language-specific node type recognition
-
-### Chunk Types Extracted
-
-- **Functions/Methods**: Complete with signatures, docstrings, decorators
-- **Classes/Structs**: Full definitions with member functions as separate chunks
-- **Interfaces/Traits**: Type definitions and contracts
-- **Enums/Constants**: Value definitions and module-level declarations
-- **Namespaces/Modules**: Organizational structures
-- **Templates/Generics**: Parameterized type definitions
-
-### Rich Metadata for All Languages
-
-- File path and folder structure
-- Function/class/type names and relationships
-- Language-specific features (async, generics, modifiers, etc.)
-- Parent-child relationships (methods within classes)
-- Line numbers for precise code location
-- Semantic tags (component, export, async, etc.)
-
-## Configuration
-
-### Environment Variables
-
-- `CODE_SEARCH_STORAGE`: Custom storage directory (default: `~/.claude_code_search`)
-- `CODE_SEARCH_CHUNK_BATCH_SIZE`: Chunk batch size for indexing (default: 256)
-- `CODE_SEARCH_EMBED_BATCH_SIZE`: Embed batch size for model inference (falls back to `CODE_SEARCH_BATCH_SIZE`)
-- `CODE_SEARCH_TORCH_BEFORE_FAISS`: Force torch import before FAISS on startup (`true`/`false`)
-
-### Model Configuration
-
-The system uses `google/embeddinggemma-300m` by default.
-
-Notes:
-
-- Download size: ~1.2–2 GB on disk depending on variant and caches
-- Device selection: auto (CUDA on NVIDIA, MPS on Apple Silicon, else CPU)
-- You can pre-download via installer or at first use
-- FAISS backend: CPU by default. If an NVIDIA GPU is detected, the installer
-  attempts to install `faiss-gpu-cu12` (or `faiss-gpu-cu11`) and the index will
-  run on GPU automatically at runtime while saving as CPU for portability.
-
-#### Hugging Face authentication (if prompted)
-
-The `google/embeddinggemma-300m` model is hosted on Hugging Face and may require
-accepting terms and/or authentication to download.
-
-1. Visit the model page and accept any terms:
-
-   - https://huggingface.co/google/embeddinggemma-300m
-
-2. Authenticate one of the following ways:
-
-   - CLI (recommended):
-
-     ```bash
-     uv run huggingface-cli login
-     # Paste your token from https://huggingface.co/settings/tokens
-     ```
-
-   - Environment variable:
-     ```bash
-     export HUGGING_FACE_HUB_TOKEN=hf_XXXXXXXXXXXXXXXXXXXXXXXX
-     ```
-
-After the first successful download, we cache the model under `~/.claude_code_search/models`
-and prefer offline loads for speed and reliability.
-
-### Supported Languages & Extensions
-
-**Fully Supported (15 extensions across 9+ languages):**
-
-| Language       | Extensions                    |
-| -------------- | ----------------------------- |
-| **Python**     | `.py`                         |
-| **JavaScript** | `.js`, `.jsx`                 |
-| **TypeScript** | `.ts`, `.tsx`                 |
-| **Java**       | `.java`                       |
-| **Go**         | `.go`                         |
-| **Rust**       | `.rs`                         |
-| **C**          | `.c`                          |
-| **C++**        | `.cpp`, `.cc`, `.cxx`, `.c++` |
-| **C#**         | `.cs`                         |
-| **Svelte**     | `.svelte`                     |
-
-**Total**: **15 file extensions** across **9+ programming languages**
-
-## Storage
-
-Data is stored in the configured storage directory:
+Default base directory: `~/.claude_code_search` (override with `CODE_SEARCH_STORAGE`).
 
 ```
 ~/.claude_code_search/
-├── models/          # Downloaded models
-├── index/           # FAISS indices and metadata
-│   ├── code.index   # Vector index
-│   ├── metadata.db  # Chunk metadata (SQLite)
-│   └── stats.json   # Index statistics
+├── models/          # Cached embedding models
+├── projects/
+│   └── {project_hash}/
+│       ├── project_info.json
+│       ├── index/
+│       │   ├── code.index           # FAISS index (flat + cosine)
+│       │   ├── metadata.db          # Chunk metadata (SQLite)
+│       │   ├── id_map.db            # chunk_id -> int_id
+│       │   ├── file_map.db          # file_path -> [int_id]
+│       │   ├── stats.json           # Index stats + index metadata + training sample stats
+│       │   ├── resume.json          # Full-index resume checkpoint
+│       │   ├── training_sample.npy  # Optional training sample vectors
+│       │   ├── training_sample_meta.json
+│       │   └── training_sample_stats.json
+│       ├── shards/                  # If sharded indexing enabled
+│       │   └── shard_###/ (code.index, metadata.db, id_map.db, file_map.db, stats.json)
+│       └── manifest.json            # Shard manifest
+│       └── snapshots/               # Merkle snapshots
 ```
 
-## Performance
+`stats.json` includes counts (total_chunks, files_indexed), chunk breakdowns, FAISS metadata
+(index_type, metric, embedding_dim, trained, nlist, nprobe), training sample stats
+(training_sample_count, training_sample_total_seen, training_sample_max), and sanity fields
+(`sanity_warning`, `sanity_suggestion`) when metadata exists but vectors are missing.
 
-- **Model size**: ~1.2GB (EmbeddingGemma-300m and caches)
-- **Embedding dimension**: 768 (can be reduced for speed)
-- **Index types**: Flat (exact) or IVF (approximate) based on dataset size
-- **Batch processing**: Configurable batch sizes for embedding generation
+## Intelligent Chunking
 
-Tips:
+The system uses advanced parsing to create semantically meaningful chunks across all supported languages.
 
-- First index on a large repo will take time (model load + chunk + embed). Subsequent runs are incremental.
-- With GPU FAISS, searches on large indexes are significantly faster.
-- Embeddings automatically use CUDA (NVIDIA) or MPS (Apple) if available.
+### Chunking strategies
+
+- **Tree-sitter for all supported languages** (Python included)
+- **Text fallback** for text-like files or when tree-sitter bindings are missing
+
+### Chunk types extracted
+
+Chunk types are mapped from tree-sitter node types and may include:
+
+- **Code structures**: `function`, `method`, `class`, `interface`, `type`, `enum`, `struct`, `union`, `namespace`, `module`, `macro`, `impl`, `trait`
+- **Language constructs**: `constructor`, `destructor`, `property`, `event`, `template`, `concept`, `annotation`
+- **UI/document chunks**: `script`, `style` (Svelte), `section`, `preamble`, `document` (Markdown)
+- **Fallback**: `text` (plain-text chunking), `module` (whole-file fallback if tree-sitter returns no nodes)
+
+### Rich metadata (all languages)
+
+Each chunk stores:
+
+- `file_path`, `relative_path`, `folder_structure`
+- `chunk_type`, `name`, `parent_name`
+- `start_line`, `end_line`
+- `docstring` (where available)
+- `decorators` (Python)
+- `tags` (language tag + detected traits)
+- `content` + `content_preview`
+
+Language-specific tags include: `async`, `generator`, `export`, `generic`, `component`, plus the language name itself.
+
+### Supported languages & extensions
+
+Tree-sitter language map:
+
+- Python: `.py`
+- JavaScript: `.js`, `.mjs`, `.cjs`
+- JSX: `.jsx`
+- TypeScript: `.ts`, `.mts`, `.cts`
+- TSX: `.tsx`
+- Svelte: `.svelte`
+- Go: `.go`
+- Rust: `.rs`
+- Java: `.java`
+- C: `.c`
+- C++: `.cpp`, `.cc`, `.cxx`, `.c++`
+- C#: `.cs`
+- HTML: `.html`, `.htm`
+- CSS: `.css`
+- JSON: `.json`, `.jsonl`
+- YAML: `.yaml`, `.yml`
+- TOML: `.toml`
+- XML: `.xml`, `.xsd`, `.xsl`, `.xslt`, `.svg`, `.xhtml`
+- GraphQL: `.graphql`, `.gql`, `.graphqls`
+- Markdown: `.md`
+- Astro: `.astro`
+
+Text fallback (when tree-sitter is unavailable or for text-like files):
+
+`.txt`, `.csv`, `.tsv`, `.ini`, `.env`, `.sql` (plus any of the above extensions if tree-sitter parsers are missing).
+
+## Search & Retrieval
+
+- **Index type**: FAISS `IndexFlatIP` wrapped in `IndexIDMap2`
+- **Similarity**: cosine similarity via L2-normalized vectors
+- **Context**: optional same-file neighbors (`CODE_SEARCH_INCLUDE_CONTEXT=1`)
+- **Filters**: glob-aware `file_pattern`, `chunk_type`, `tags`
+
+## Performance & Reliability
+
+- **Adaptive embedding batch backoff** to survive OOM on MPS/CUDA
+- **Warn-only disk/large-file checks** (configurable via env)
+- **Resume checkpoints** for long full-index runs
+- **Sharded search** with memory-aware shard grouping
 
 ## Troubleshooting
 
@@ -343,10 +359,10 @@ Tips:
 
 1. **Import errors**: Ensure all dependencies are installed with `uv sync`
 2. **Model download fails**: Check internet connection and disk space
-3. **Memory issues**: Reduce batch size in indexing script
+3. **Memory issues**: Reduce `CODE_SEARCH_EMBED_BATCH_SIZE`
 4. **No search results**: Verify the codebase was indexed successfully
-5. **FAISS GPU not used**: Ensure `nvidia-smi` is available and CUDA drivers are installed; re-run installer to pick `faiss-gpu-cu12`/`cu11`.
-6. **Force offline**: We auto-detect a local cache and prefer offline loads; you can also set `HF_HUB_OFFLINE=1`.
+5. **FAISS GPU not used**: Ensure `nvidia-smi` is available and CUDA drivers are installed; re-run installer to pick `faiss-gpu-cu12`/`cu11`
+6. **Force offline**: set `HF_HUB_OFFLINE=1`
 
 ### Ignored directories (for speed and noise reduction)
 
@@ -358,13 +374,4 @@ This is a research project focused on intelligent code chunking and search. Feel
 
 - Different chunking strategies
 - Alternative embedding models
-- Enhanced metadata extraction
-- Performance optimizations
-
-## License
-
-Licensed under the GNU General Public License v3.0 (GPL-3.0). See the `LICENSE` file for details.
-
-## Inspiration
-
-This project draws inspiration from [zilliztech/claude-context](https://github.com/zilliztech/claude-context). I adapted the concepts to a Python implementation with fully local embeddings.
+- Additional language support

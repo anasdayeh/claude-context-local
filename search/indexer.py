@@ -38,12 +38,15 @@ class CodeIndexManager:
         self.index_path = self.storage_dir / "code.index"
         self.metadata_path = self.storage_dir / "metadata.db"
         self.id_map_path = self.storage_dir / "id_map.db"
+        self.file_map_path = self.storage_dir / "file_map.db"
         self.stats_path = self.storage_dir / "stats.json"
         
         # Initialize components
         self._index = None
         self._metadata_db = None
         self._id_map_db = None
+        self._file_map_db = None
+        self._training_sample = None
         self._logger = logging.getLogger(__name__)
         self._on_gpu = False
         self._legacy_index_map = None
@@ -69,6 +72,24 @@ class CodeIndexManager:
             self._id_map_db = self._open_sqlitedict(self.id_map_path)
         return self._id_map_db
 
+    @property
+    def file_map_db(self):
+        """Lazy loading of file_path -> [int_id] map."""
+        if self._file_map_db is None:
+            self._file_map_db = self._open_sqlitedict(self.file_map_path)
+        return self._file_map_db
+
+    @property
+    def training_sample(self):
+        """Lazy loading of training sample store."""
+        if self._training_sample is None:
+            from search.training_sample import TrainingSampleStore, resolve_training_sample_max
+            max_vectors = resolve_training_sample_max()
+            if max_vectors <= 0:
+                return None
+            self._training_sample = TrainingSampleStore(self.storage_dir, max_vectors=max_vectors)
+        return self._training_sample
+
     def _open_sqlitedict(self, path: Path) -> SqliteDict:
         """Open a SqliteDict with basic corruption recovery."""
         def _open():
@@ -89,6 +110,36 @@ class CodeIndexManager:
                 self._backup_sqlite_files(path)
                 return _open()
             raise
+
+    def _metadata_exists(self) -> bool:
+        """Return True if any metadata entries exist."""
+        try:
+            for _ in self.metadata_db.items():
+                return True
+        except Exception:
+            return False
+        return False
+
+    def _apply_sanity_warning(self, stats: Dict[str, Any]) -> None:
+        """Attach sanity warning when metadata exists but no vectors are indexed."""
+        try:
+            total_chunks = int(stats.get("total_chunks", 0))
+        except Exception:
+            total_chunks = 0
+        if total_chunks > 0:
+            return
+
+        metadata_hint = bool(stats.get("files_indexed") or stats.get("chunk_types") or stats.get("top_tags"))
+        metadata_exists = metadata_hint or self._metadata_exists()
+        if not metadata_exists:
+            return
+
+        stats["sanity_warning"] = (
+            "Index has metadata but zero vectors; FAISS index is missing or stale."
+        )
+        stats["sanity_suggestion"] = (
+            "Reindex the project to rebuild the FAISS vectors."
+        )
 
     def _backup_sqlite_files(self, path: Path) -> None:
         """Move sqlite db and wal/shm to a timestamped backup."""
@@ -196,20 +247,50 @@ class CodeIndexManager:
         # Add to FAISS index with explicit IDs
         self._index.add_with_ids(embeddings, ids)
         
-        # Store metadata and update id map
+        # Store metadata and update id map / file map
+        sample_metas: List[Dict[str, Any]] = []
         for i, result in enumerate(embedding_results):
             int_id = int(ids[i])
+            prev_entry = self.metadata_db.get(str(int_id))
+            if prev_entry:
+                prev_meta = prev_entry.get("metadata") if isinstance(prev_entry, dict) else None
+                prev_key = self._normalize_file_key(prev_meta)
+                if prev_key:
+                    self._remove_ids_from_file_map(prev_key, {int_id})
+
             self.metadata_db[str(int_id)] = {
                 'chunk_id': result.chunk_id,
                 'metadata': result.metadata
             }
+            new_key = self._normalize_file_key(result.metadata)
+            if new_key:
+                self._add_ids_to_file_map(new_key, {int_id})
+
+            meta = result.metadata or {}
+            sample_metas.append(
+                {
+                    "relative_path": meta.get("relative_path"),
+                    "file_path": meta.get("file_path"),
+                    "chunk_type": meta.get("chunk_type"),
+                    "model": result.model_name or meta.get("model"),
+                    "tags": meta.get("tags"),
+                }
+            )
         
         self._logger.info(f"Added {len(embedding_results)} embeddings to index")
-        
+
+        sample_store = self.training_sample
+        if sample_store is not None:
+            try:
+                sample_store.add_batch(embeddings, sample_metas)
+            except Exception:
+                pass
+
         # Commit metadata in a single transaction for performance
         try:
             self.metadata_db.commit()
             self.id_map_db.commit()
+            self.file_map_db.commit()
         except Exception:
             # If commit is unavailable for some reason, continue without failing
             pass
@@ -404,20 +485,40 @@ class CodeIndexManager:
         if self.stats_path.exists():
             try:
                 with open(self.stats_path, 'r') as f:
-                    return json.load(f)
+                    stats = json.load(f)
+                    stats.update(self._get_index_metadata())
+                    stats.update(self._get_training_sample_stats())
+                    self._apply_sanity_warning(stats)
+                    return stats
             except Exception:
                 pass
 
-        return {
+        stats = {
             'total_chunks': self.index.ntotal if self.index else 0,
             'files_indexed': self._count_indexed_files(),
             'storage_size': self.get_storage_bytes(),
         }
+        stats.update(self._get_index_metadata())
+        stats.update(self._get_training_sample_stats())
+        self._apply_sanity_warning(stats)
+        return stats
 
     def get_storage_bytes(self) -> int:
         """Return total on-disk bytes for index + metadata."""
         total = 0
-        for path in (self.index_path, self.metadata_path, self.id_map_path, self.stats_path):
+        sample_paths = [
+            self.storage_dir / "training_sample.npy",
+            self.storage_dir / "training_sample_meta.json",
+            self.storage_dir / "training_sample_stats.json",
+        ]
+        for path in (
+            self.index_path,
+            self.metadata_path,
+            self.id_map_path,
+            self.file_map_path,
+            self.stats_path,
+            *sample_paths,
+        ):
             if path.exists():
                 total += path.stat().st_size
         return total
@@ -444,6 +545,9 @@ class CodeIndexManager:
             'top_tags': top_tags,
             'last_updated': time.time()
         }
+        stats.update(self._get_index_metadata())
+        stats.update(self._get_training_sample_stats())
+        self._apply_sanity_warning(stats)
         if extra_metadata:
             current_stats.update(extra_metadata)
         current_stats.update(stats)
@@ -453,6 +557,80 @@ class CodeIndexManager:
                 json.dump(current_stats, f, indent=2)
         except Exception as e:
             self._logger.error(f"Failed to update stats: {e}")
+
+    def _get_index_metadata(self) -> Dict[str, Any]:
+        """Return metadata about the underlying FAISS index."""
+        if self._index is None:
+            return {}
+
+        base = self._index
+        try:
+            if isinstance(base, faiss.IndexIDMap2):
+                base = base.index
+        except Exception:
+            pass
+
+        meta: Dict[str, Any] = {}
+        try:
+            meta["index_type"] = self._classify_index_type(base)
+        except Exception:
+            meta["index_type"] = base.__class__.__name__
+
+        try:
+            meta["embedding_dim"] = int(getattr(base, "d"))
+        except Exception:
+            pass
+
+        metric_type = getattr(base, "metric_type", None)
+        if metric_type is not None:
+            if metric_type == faiss.METRIC_INNER_PRODUCT:
+                meta["metric"] = "ip"
+            elif metric_type == faiss.METRIC_L2:
+                meta["metric"] = "l2"
+            else:
+                meta["metric"] = str(metric_type)
+
+        if hasattr(base, "is_trained"):
+            meta["trained"] = bool(base.is_trained)
+        else:
+            meta["trained"] = True
+
+        if hasattr(base, "nlist"):
+            try:
+                meta["nlist"] = int(base.nlist)
+            except Exception:
+                pass
+        if hasattr(base, "nprobe"):
+            try:
+                meta["nprobe"] = int(base.nprobe)
+            except Exception:
+                pass
+
+        return meta
+
+    def _get_training_sample_stats(self) -> Dict[str, Any]:
+        stats_path = self.storage_dir / "training_sample_stats.json"
+        if not stats_path.exists():
+            return {}
+        try:
+            payload = json.loads(stats_path.read_text())
+            return {
+                "training_sample_count": int(payload.get("count", 0)),
+                "training_sample_total_seen": int(payload.get("total_seen", 0)),
+                "training_sample_max": int(payload.get("max_vectors", 0)),
+            }
+        except Exception:
+            return {}
+
+    def _classify_index_type(self, base) -> str:
+        if hasattr(base, "nlist"):
+            return "ivf"
+        try:
+            if isinstance(base, faiss.IndexFlat):
+                return "flat"
+        except Exception:
+            pass
+        return base.__class__.__name__
 
     def _count_indexed_files(self) -> int:
         """Count unique files represented in metadata."""
@@ -509,6 +687,15 @@ class CodeIndexManager:
         
         if self._id_map_db:
             self._id_map_db.commit()
+
+        if self._file_map_db:
+            self._file_map_db.commit()
+
+        if self._training_sample is not None:
+            try:
+                self._training_sample.save()
+            except Exception:
+                pass
             
         self._update_stats(extra_metadata=extra_metadata)
 
@@ -525,8 +712,24 @@ class CodeIndexManager:
         if self._id_map_db:
             self._id_map_db.close()
             self._id_map_db = None
+
+        if self._file_map_db:
+            self._file_map_db.close()
+            self._file_map_db = None
+
+        if self._training_sample is not None:
+            try:
+                self._training_sample.clear()
+            except Exception:
+                pass
+            self._training_sample = None
             
-        for p in [self.index_path, self.metadata_path, self.id_map_path, self.stats_path]:
+        extra_paths = [
+            self.storage_dir / "training_sample.npy",
+            self.storage_dir / "training_sample_meta.json",
+            self.storage_dir / "training_sample_stats.json",
+        ]
+        for p in [self.index_path, self.metadata_path, self.id_map_path, self.file_map_path, self.stats_path, *extra_paths]:
             if p.exists():
                 p.unlink()
             # Also cleanup WAL/SHM
@@ -553,16 +756,20 @@ class CodeIndexManager:
             
         ids_to_remove = []
         norm_target = Path(file_path).as_posix()
-        # This is a linear scan of metadata - okay for small/medium repos.
-        # For very large ones, we'd need a secondary index (file_path -> ids).
-        for int_id_str, entry in self.metadata_db.items():
-            meta = entry.get("metadata", {})
-            path = meta.get("relative_path") or meta.get("file_path")
-            if not path:
-                continue
-            norm_path = Path(path).as_posix()
-            if norm_path == norm_target or norm_path.endswith(norm_target) or norm_target.endswith(norm_path):
-                ids_to_remove.append(int(int_id_str))
+
+        mapped_ids = self.file_map_db.get(norm_target)
+        if mapped_ids:
+            ids_to_remove = [int(i) for i in mapped_ids]
+        else:
+            # Fallback: linear scan of metadata
+            for int_id_str, entry in self.metadata_db.items():
+                meta = entry.get("metadata", {})
+                path = meta.get("relative_path") or meta.get("file_path")
+                if not path:
+                    continue
+                norm_path = Path(path).as_posix()
+                if norm_path == norm_target or norm_path.endswith(norm_target) or norm_target.endswith(norm_path):
+                    ids_to_remove.append(int(int_id_str))
                 
         if not ids_to_remove:
             return 0
@@ -578,9 +785,43 @@ class CodeIndexManager:
                     chunk_id = entry.get("chunk_id")
                     if chunk_id:
                         del self.id_map_db[chunk_id]
+                    meta = entry.get("metadata", {})
+                    key = self._normalize_file_key(meta)
+                    if key:
+                        self._remove_ids_from_file_map(key, {iid})
                 del self.metadata_db[iid_str]
+
+            if mapped_ids:
+                self.file_map_db.pop(norm_target, None)
                 
             return len(ids_to_remove)
         except Exception as e:
             self._logger.error(f"Failed to remove IDs: {e}")
             return 0
+
+    def _normalize_file_key(self, meta: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not isinstance(meta, dict):
+            return None
+        path = meta.get("relative_path") or meta.get("file_path")
+        if not path:
+            return None
+        return Path(path).as_posix()
+
+    def _add_ids_to_file_map(self, key: str, ids: set[int]) -> None:
+        existing = self.file_map_db.get(key) or []
+        merged = set(int(i) for i in existing)
+        merged.update(int(i) for i in ids)
+        self.file_map_db[key] = sorted(merged)
+
+    def _remove_ids_from_file_map(self, key: str, ids: set[int]) -> None:
+        existing = self.file_map_db.get(key)
+        if not existing:
+            return
+        remaining = [int(i) for i in existing if int(i) not in ids]
+        if remaining:
+            self.file_map_db[key] = remaining
+        else:
+            try:
+                del self.file_map_db[key]
+            except Exception:
+                pass

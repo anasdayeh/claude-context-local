@@ -159,7 +159,7 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
             chunk_type,
             include_context,
             auto_reindex,
-            max_age_minutes, project_path, False,
+            max_age_minutes, project_path, True,
         )
         return _coerce_result(result)
 
@@ -308,6 +308,16 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
         result = await _run(server.clear_index)
         try:
             await ctx.session.send_resource_updated("search://stats")
+        except Exception:
+            pass
+        return _coerce_result(result)
+
+    @mcp.tool(description=strings.get("tools", {}).get("repair_index", "Repair index manifests"))
+    async def repair_index(project_path: str = None, ctx: Optional[Context] = None) -> dict:
+        result = await _run(server.repair_index, project_path)
+        try:
+            if ctx is not None:
+                await ctx.session.send_resource_updated("search://stats")
         except Exception:
             pass
         return _coerce_result(result)

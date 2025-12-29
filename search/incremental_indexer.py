@@ -74,6 +74,7 @@ class IncrementalIndexer:
         self.large_file_mb = self._read_env_int_allow_zero("CODE_SEARCH_LARGE_FILE_MB", 20)
         self._progress_callback = None
         self._checkpoint_interval = self.chunk_batch_size * 5
+        self._progress_every_files = self._read_env_int("CODE_SEARCH_PROGRESS_EVERY_FILES", 50)
 
     def _read_env_int(self, name: str, default: int) -> int:
         value = os.getenv(name)
@@ -412,6 +413,13 @@ class IncrementalIndexer:
 
                         if self._chunks_processed_in_session >= self._checkpoint_interval:
                             logger.info(f"Checkpoint: Saved {chunks_added} chunks so far...")
+                            if self._progress_callback:
+                                try:
+                                    self._progress_callback(
+                                        f"checkpoint: saved {chunks_added} chunks"
+                                    )
+                                except Exception:
+                                    pass
                             self.indexer.save_index()
                             if resume_state and resume_enabled:
                                 total = max(1, resume_state.files_total)
@@ -438,8 +446,31 @@ class IncrementalIndexer:
                     resume_state.hashes[file_path] = file_hashes.get(file_path, "")
                     resume_state.files_completed = len(resume_state.completed)
 
+                if (
+                    self._progress_callback
+                    and resume_state
+                    and resume_enabled
+                    and self._progress_every_files > 0
+                    and resume_state.files_completed % self._progress_every_files == 0
+                ):
+                    total = max(1, resume_state.files_total)
+                    pct = (resume_state.files_completed / total) * 100.0
+                    try:
+                        self._progress_callback(
+                            f"progress: {resume_state.files_completed}/{resume_state.files_total} files ({pct:.1f}%)"
+                        )
+                    except Exception:
+                        pass
+
                 if self._chunks_processed_in_session >= self._checkpoint_interval:
                     logger.info(f"Checkpoint: Saved {chunks_added} chunks so far...")
+                    if self._progress_callback:
+                        try:
+                            self._progress_callback(
+                                f"checkpoint: saved {chunks_added} chunks"
+                            )
+                        except Exception:
+                            pass
                     self.indexer.save_index()
                     if resume_state and resume_enabled:
                         total = max(1, resume_state.files_total)

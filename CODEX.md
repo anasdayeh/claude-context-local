@@ -1,10 +1,10 @@
-# CLAUDE.md
+# CODEX.md
 
 This file provides guidance to Codex when working with code in this repository.
 
 ## Project Overview
 
-Codex Embedding Search is an intelligent code search system that uses Google's EmbeddingGemma model and AST-based chunking to provide semantic search capabilities for Python codebases, integrated with Codex via MCP (Model Context Protocol).
+Codex Embedding Search is a fully local semantic code search system powered by EmbeddingGemma and tree-sitter chunking. It integrates with Codex via MCP (Model Context Protocol) to index and search codebases without sending code to the cloud.
 
 ## Key Commands
 
@@ -51,9 +51,6 @@ python -m pytest tests/unit/test_chunking.py -v  # Single test file
 ### Indexing & Usage
 
 ```bash
-# Index a Python codebase
-./scripts/index_codebase.py /path/to/project
-
 # Index a repo using the MCP pipeline (recommended for large repos)
 uv run --directory ~/.local/share/claude-context-local \
   python scripts/index_repo.py /path/to/repo \
@@ -61,15 +58,22 @@ uv run --directory ~/.local/share/claude-context-local \
   --sharded \
   --log-file ~/code_search_index.log
 
-# Index with custom storage location
-./scripts/index_codebase.py /path/to/project --storage-dir /custom/location
+# Index with background job
+uv run --directory ~/.local/share/claude-context-local \
+  python scripts/index_repo.py /path/to/repo \
+  --project-name MyRepo \
+  --sharded \
+  --background \
+  --log-file ~/code_search_index.log
 
-# Clear existing index and reindex
-./scripts/index_codebase.py /path/to/project --clear
-
-# Enable verbose logging
-./scripts/index_codebase.py /path/to/project --verbose
+# Repair sharded manifest (fast, no reindex)
+uv run --directory ~/.local/share/claude-context-local \
+  python scripts/index_repo.py /path/to/repo \
+  --repair
 ```
+
+If shards exist but the manifest is empty, `switch_project()` will auto-repair and log a warning.
+`switch_project()` also accepts healthy sharded indexes (manifest + shard `code.index` files) without requiring a root `code.index`.
 
 ### MCP Server
 
@@ -84,55 +88,80 @@ codex mcp add claude_context_local --scope user -- uv run --directory ~/.local/s
 codex mcp add claude_context_local -- uv run --directory ~/.local/share/claude-context-local python mcp_server/server.py --transport stdio
 ```
 
-### MCP Environment Options
+## MCP Environment Options
 
 - `CODE_SEARCH_STORAGE`: Base directory for indexes and model cache.
 - `CODE_SEARCH_DATA_DIR`: Alias for `CODE_SEARCH_STORAGE`.
-- `CODE_SEARCH_DEVICE`: `cpu` | `mps` | `cuda` (auto if unset).
+- `CODE_SEARCH_DEVICE`: `cpu` | `mps` | `cuda` | `auto`.
 - `CODE_SEARCH_PRELOAD_MODEL`: `1` to preload on startup (off by default).
+- `CODE_SEARCH_LOG_LEVEL`: `DEBUG` | `INFO` | `WARNING` | `ERROR` | `CRITICAL`.
+- `CODE_SEARCH_LOG_FILE`: Path to a logfile (defaults to stderr).
 - `CODE_SEARCH_CHUNK_BATCH_SIZE`: chunk batch size for indexing.
+- `CODE_SEARCH_BATCH_SIZE`: legacy embed batch size fallback.
 - `CODE_SEARCH_EMBED_BATCH_SIZE`: embedding batch size for model encode.
 - `CODE_SEARCH_INCLUDE_CONTEXT`: include same-file context in search results.
 - `CODE_SEARCH_DISK_WARN_GB`: warn if free disk below this threshold (warn-only).
-- `CODE_SEARCH_LARGE_FILE_MB`: warn on large files above this size (warn-only).
+- `CODE_SEARCH_LARGE_FILE_MB`: warn on files larger than this size (warn-only).
+- `CODE_SEARCH_PROGRESS_EVERY_FILES`: emit rate-limited progress events every N files (default 50).
 - `CODE_SEARCH_RESUME`: resume interrupted full indexing runs from checkpoint (default on; set `0` to disable).
 - `CODE_SEARCH_ASYNC_INDEX`: force `index_directory` to run as a background job (recommended for large repos).
-- `CODE_SEARCH_SYNC_INDEX`: force `index_directory` to block until completion (not recommended for large repos due to Codex tool-call timeouts).
+- `CODE_SEARCH_SYNC_INDEX`: force `index_directory` to block until completion (not recommended for large repos).
 - `CODE_SEARCH_ASYNC_FILE_THRESHOLD`: file-count heuristic used to auto background-index (default ~2500).
 - `CODE_SEARCH_ASYNC_SCAN_SECONDS`: max seconds to spend estimating repo size before defaulting to background indexing (default ~2).
-- `CODE_SEARCH_INDEX_WORKERS`: background indexing workers (default 1).
+- `CODE_SEARCH_INDEX_WORKERS`: background indexing workers (default 2; restart MCP to apply).
 - `CODE_SEARCH_JOB_EVENT_BUFFER`: stored job progress events (default 200).
 - `CODE_SEARCH_SHARDED_INDEX`: enable sharded FAISS indexes.
 - `CODE_SEARCH_SHARD_TARGET_BYTES`: target shard size before rollover (default ~512MB).
 - `CODE_SEARCH_SHARD_MEMORY_CAP_GB`: max RAM budget for loaded shards (default 13).
+- `CODE_SEARCH_TRAIN_SAMPLE_MAX`: max training sample vectors stored for IVF readiness (default 25000).
+- `CODE_SEARCH_TORCH_BEFORE_FAISS`: Force torch import before FAISS on startup (`true`/`false`).
+- `CODE_SEARCH_IGNORE_DIRS`: comma-separated extra ignore patterns for indexing/merkle.
+- `HF_HUB_OFFLINE`: force offline model loading.
 
 ## Architecture
 
-The codebase is organized into distinct modules with clear separation of concerns:
-
 ### Core Components
 
-- **`chunking/`**: AST-based code parsing and chunking
-  - `python_ast_chunker.py`: Breaks Python code into semantically meaningful chunks (functions, classes, modules)
-  - `multi_language_chunker.py`: Tree-sitter based chunking for JavaScript, TypeScript, Go, Java, Rust, and Svelte
-  - Preserves context and relationships between code elements
-- **`embeddings/`**: Embedding generation using EmbeddingGemma
-  - `embedder.py`: Handles model loading, caching, and batch embedding generation
-  - Uses `google/embeddinggemma-300m` model with 768-dimensional embeddings
-- **`search/`**: FAISS-based search and indexing
-  - `indexer.py`: Manages FAISS indices, metadata storage (SQLite), and index persistence
-  - `searcher.py`: Intelligent search with filtering, context-aware results, and similarity search
-- **`mcp_server/`**: Codex integration via MCP
+- **`chunking/`**: Tree-sitter + text fallback chunking
+  - `multi_language_chunker.py`: unified orchestrator
+  - `tree_sitter.py`: language-aware tree-sitter chunker
+  - `base_chunker.py`: base class for language chunkers
+  - `languages/`: per-language metadata extraction
+  - `text_chunker.py`: plain-text fallback chunker
+- **`embeddings/`**: EmbeddingGemma inference
+  - `embedder.py`: model loading, batching, adaptive backoff
+- **`search/`**: FAISS-based indexing + metadata
+  - `indexer.py`: IndexFlatIP + IDMap2 + SQLite metadata
+  - `sharded_index_manager.py`: sharded index manager and memory budget
+  - `searcher.py`: intent-aware semantic search + filters
+  - `incremental_indexer.py`: Merkle-driven incremental indexing
+  - `resume_state.py`: resume-from-checkpoint state
+- **`merkle/`**: Change detection
+  - `merkle_dag.py`: hash DAG for file tracking
+  - `change_detector.py`: add/modify/remove detection
+  - `snapshot_manager.py`: snapshot persistence
+- **`mcp_server/`**: MCP integration
+  - `server.py`: MCP entrypoint
+  - `mcp_tools.py`: tool registration
 
-  - `server.py`: FastMCP server exposing search tools to Codex
-  - `code_search_mcp.py`: legacy shim used by tests
-  - Provides `search_code`, `index_directory`, `start_index_directory`, `get_index_job_status`, `cancel_index_job`, `find_similar_code`, etc.
+### Data Flow
 
-- **`merkle/`**: Incremental indexing support
-  - `merkle_dag.py`: Merkle tree implementation for efficient change detection
-  - `change_detector.py`: Detects file additions, modifications, and deletions
-  - `snapshot_manager.py`: Manages snapshots for incremental indexing
-- **`search/incremental_indexer.py`**: Orchestrates incremental indexing using Merkle tree change detection
+```mermaid
+graph TD
+    A["Codex (MCP client)"] -->|index_directory| B["MCP Server"]
+    B --> C{IncrementalIndexer}
+    C --> D["Merkle DAG"]
+    C --> E["ChangeDetector"]
+    C --> F["MultiLanguageChunker"]
+    F --> G["Code Chunks"]
+    C --> H["CodeEmbedder"]
+    H --> I["Embeddings"]
+    C --> J["CodeIndexManager / ShardedIndexManager"]
+    I --> J
+    C --> K["SnapshotManager"]
+    B -->|search_code| L["IntelligentSearcher"]
+    L --> J
+```
 
 ### Storage Structure
 
@@ -142,23 +171,93 @@ Data is stored in `~/.claude_code_search/` (configurable via `CODE_SEARCH_STORAG
 ~/.claude_code_search/
 ├── models/          # Downloaded EmbeddingGemma models
 ├── projects/        # Project-specific data
-│   └── {project_name}_{hash}/
-│       ├── project_info.json  # Project metadata
-│       ├── index/             # FAISS indices and metadata
+│   └── {project_hash}/
+│       ├── project_info.json
+│       ├── index/
 │       │   ├── code.index     # Vector index
 │       │   ├── metadata.db    # Chunk metadata (SQLite)
-│       │   └── stats.json     # Index statistics
-│       └── snapshots/         # Merkle tree snapshots for incremental indexing
+│       │   ├── id_map.db      # chunk_id -> int_id
+│       │   ├── file_map.db    # file_path -> [int_id]
+│       │   ├── stats.json     # Index statistics + metadata + training sample stats
+│       │   ├── resume.json    # Resume checkpoint for full indexing
+│       │   ├── training_sample.npy
+│       │   ├── training_sample_meta.json
+│       │   └── training_sample_stats.json
+│       ├── shards/            # If sharded indexing is enabled
+│       │   └── shard_###/ (code.index, metadata.db, id_map.db, file_map.db, stats.json)
+│       ├── manifest.json      # Shard manifest
+│       └── snapshots/         # Merkle tree snapshots
 ```
 
-### Chunking Strategy
+`stats.json` includes counts (total_chunks, files_indexed), chunk breakdowns, FAISS metadata
+(index_type, metric, embedding_dim, trained, nlist, nprobe), training sample stats
+(training_sample_count, training_sample_total_seen, training_sample_max), and sanity fields
+(`sanity_warning`, `sanity_suggestion`) when metadata exists but vectors are missing.
 
-The system uses AST parsing to create semantically meaningful chunks:
+## Intelligent Chunking
 
-- Complete functions with docstrings and decorators
-- Full classes with methods as separate chunks
-- Module-level code blocks and constants
-- Rich metadata: file paths, semantic tags, complexity scores, relationships
+- **Tree-sitter for all supported languages** (Python included)
+- **Text fallback** for text-like files or when tree-sitter bindings are missing
+
+### Chunk Types Extracted
+
+Common chunk types include:
+
+- `function`, `method`, `class`, `interface`, `type`, `enum`, `struct`, `union`, `namespace`, `module`, `macro`, `impl`, `trait`
+- `constructor`, `destructor`, `property`, `event`, `template`, `concept`, `annotation`
+- `script`, `style` (Svelte), `section`, `preamble`, `document` (Markdown)
+- `text` (fallback chunks), `module` (whole-file fallback when no nodes are found)
+
+### Rich Metadata (All Languages)
+
+Each chunk stores:
+
+- `file_path`, `relative_path`, `folder_structure`
+- `chunk_type`, `name`, `parent_name`
+- `start_line`, `end_line`
+- `docstring` (when available)
+- `decorators` (Python)
+- `tags` (language + detected traits)
+- `content` + `content_preview`
+
+Language-specific tags include: `async`, `generator`, `export`, `generic`, `component`, plus the language tag.
+
+## Supported Languages & Extensions
+
+Tree-sitter language map:
+
+- Python: `.py`
+- JavaScript: `.js`, `.mjs`, `.cjs`
+- JSX: `.jsx`
+- TypeScript: `.ts`, `.mts`, `.cts`
+- TSX: `.tsx`
+- Svelte: `.svelte`
+- Go: `.go`
+- Rust: `.rs`
+- Java: `.java`
+- C: `.c`
+- C++: `.cpp`, `.cc`, `.cxx`, `.c++`
+- C#: `.cs`
+- HTML: `.html`, `.htm`
+- CSS: `.css`
+- JSON: `.json`, `.jsonl`
+- YAML: `.yaml`, `.yml`
+- TOML: `.toml`
+- XML: `.xml`, `.xsd`, `.xsl`, `.xslt`, `.svg`, `.xhtml`
+- GraphQL: `.graphql`, `.gql`, `.graphqls`
+- Markdown: `.md`
+- Astro: `.astro`
+
+Text fallback (when tree-sitter is unavailable or for text-like files):
+
+`.txt`, `.csv`, `.tsv`, `.ini`, `.env`, `.sql` (plus any of the above extensions if tree-sitter parsers are missing).
+
+## Search & Retrieval
+
+- **Index type**: FAISS `IndexFlatIP` wrapped in `IndexIDMap2`
+- **Similarity**: cosine similarity via L2-normalized vectors
+- **Context**: optional same-file neighbors (`CODE_SEARCH_INCLUDE_CONTEXT=1`)
+- **Filters**: glob-aware `file_pattern`, `chunk_type`, `tags`
 
 ## Testing Strategy
 
@@ -166,7 +265,7 @@ Tests are organized by component with pytest markers:
 
 - `unit`: Fast, isolated unit tests
 - `integration`: End-to-end workflow tests
-- `chunking`: AST chunking functionality
+- `chunking`: Chunking functionality
 - `embeddings`: Model loading and embedding generation
 - `search`: Indexing and search functionality
 - `mcp`: MCP server integration
@@ -180,40 +279,31 @@ Tests are organized by component with pytest markers:
 - `faiss-cpu`: Efficient vector similarity search
 - `fastmcp`: MCP server implementation for Codex integration
 - `sqlitedict`: Persistent metadata storage
-- `tree-sitter` & `tree-sitter-languages`: Multi-language parsing support
+- `tree-sitter` & `tree-sitter-language-pack`: Multi-language parsing support
 - `click`: Command-line interface utilities
 - `pytest`: Testing framework with async support
 
 ### Performance Considerations
 
 - Model size: ~300MB (EmbeddingGemma-300m)
-- Embedding dimension: 768 (FAISS Flat index for small datasets, IVF for large)
+- Embedding dimension: 768
 - Batch processing: Configurable batch sizes for memory management
 - Local processing: All embeddings computed locally, no API calls
-- Incremental indexing: Only reprocesses changed files using Merkle tree snapshots
-
-### Environment Variables
-
-- `CODE_SEARCH_STORAGE`: Custom storage directory (default: `~/.claude_code_search`)
-- `CODE_SEARCH_DATA_DIR`: Alias for `CODE_SEARCH_STORAGE`
-- `CODE_SEARCH_CHUNK_BATCH_SIZE`: Chunk batch size for indexing (default: 256)
-- `CODE_SEARCH_EMBED_BATCH_SIZE`: Embed batch size for model inference (falls back to `CODE_SEARCH_BATCH_SIZE`)
-- `CODE_SEARCH_TORCH_BEFORE_FAISS`: Force torch import before FAISS on startup (`true`/`false`)
-- `CODE_SEARCH_DISK_WARN_GB`: Warn if free disk below this threshold (warn-only)
-- `CODE_SEARCH_LARGE_FILE_MB`: Warn on files larger than this size (warn-only)
+- Incremental indexing: Only reprocesses changed files using Merkle snapshots
+- Sharded indexing: Cap memory with `CODE_SEARCH_SHARD_MEMORY_CAP_GB`
 
 ## Common Tasks
 
-### Adding New Chunk Types
+### Modifying Chunking
 
-1. Extend `python_ast_chunker.py` to handle new AST node types
-2. Update metadata extraction in chunk creation
-3. Add corresponding tests in `tests/unit/test_chunking.py`
+1. Update or add a language chunker in `chunking/languages/`
+2. Add/adjust node mappings in `chunking/multi_language_chunker.py`
+3. Add tests in `tests/unit/test_multi_language.py` or language-specific tests
 
 ### Modifying Search Behavior
 
 1. Update `searcher.py` for new filtering/ranking logic
-2. Modify MCP server tools in `server.py` if new parameters needed
+2. Modify MCP tool parameters in `mcp_server/mcp_tools.py` if needed
 3. Add integration tests in `tests/integration/test_full_flow.py`
 
 ### Testing Changes
@@ -229,14 +319,3 @@ For quick iteration during development:
 ```bash
 python tests/run_tests.py --unit --verbose -x
 ```
-
-### Multi-Language Support
-
-The system now supports chunking and indexing multiple languages:
-
-- Python (AST-based chunking)
-- JavaScript/TypeScript (tree-sitter)
-- JSX/TSX (React components)
-- Go, Java, Rust (tree-sitter)
-- Svelte components
-- Markdown (section-based chunking by headers)

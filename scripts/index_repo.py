@@ -72,6 +72,11 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Disable resume-from-checkpoint for full indexing",
     )
+    parser.add_argument(
+        "--repair",
+        action="store_true",
+        help="Repair a sharded manifest from existing shard folders",
+    )
     return parser.parse_args()
 
 
@@ -109,6 +114,11 @@ def main() -> int:
         logger.info("ShardedIndexManager introspection failed: %s", exc)
 
     server = CodeSearchServer()
+
+    if args.repair:
+        result = server.repair_index(str(repo_path))
+        print(result)
+        return 0 if result.get("repaired") or result.get("success") else 1
 
     if args.background:
         job = server.start_index_job(

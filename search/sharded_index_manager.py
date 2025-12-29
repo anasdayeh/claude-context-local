@@ -281,6 +281,10 @@ class ShardedIndexManager:
         file_paths = set()
         chunk_types: Dict[str, int] = {}
         tag_counts: Dict[str, int] = {}
+        index_meta: Dict[str, Any] = {}
+        training_count = 0
+        training_seen = 0
+        training_max = 0
 
         for shard in self._manifest.shards:
             shard_id = shard["id"]
@@ -289,6 +293,16 @@ class ShardedIndexManager:
             total_chunks += int(stats.get("total_chunks", 0))
             storage_size += int(stats.get("storage_size", 0))
             self._update_manifest_for_shard(shard_id, stats)
+            if not index_meta:
+                for key in ("index_type", "metric", "embedding_dim", "trained", "nlist", "nprobe"):
+                    if key in stats:
+                        index_meta[key] = stats.get(key)
+            if "training_sample_count" in stats:
+                training_count += int(stats.get("training_sample_count", 0))
+            if "training_sample_total_seen" in stats:
+                training_seen += int(stats.get("training_sample_total_seen", 0))
+            if "training_sample_max" in stats:
+                training_max = max(training_max, int(stats.get("training_sample_max", 0)))
 
             for _, meta in manager.metadata_db.items():
                 meta = meta.get("metadata") if isinstance(meta, dict) else None
@@ -306,7 +320,7 @@ class ShardedIndexManager:
 
         top_tags = dict(sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)[:20])
 
-        return {
+        stats = {
             "total_chunks": total_chunks,
             "files_indexed": len(file_paths),
             "chunk_types": chunk_types,
@@ -314,6 +328,19 @@ class ShardedIndexManager:
             "storage_size": storage_size,
             "shard_count": len(self._manifest.shards),
         }
+        if total_chunks == 0 and (file_paths or chunk_types or tag_counts):
+            stats["sanity_warning"] = (
+                "Index has metadata but zero vectors; FAISS index is missing or stale."
+            )
+            stats["sanity_suggestion"] = (
+                "Reindex the project to rebuild the FAISS vectors."
+            )
+        if training_count:
+            stats["training_sample_count"] = training_count
+            stats["training_sample_total_seen"] = training_seen
+            stats["training_sample_max"] = training_max
+        stats.update(index_meta)
+        return stats
 
     def _write_root_stats(self, extra_metadata: Optional[Dict[str, Any]] = None) -> None:
         stats = self._compute_root_stats()
@@ -323,6 +350,61 @@ class ShardedIndexManager:
             self.stats_path.write_text(json.dumps(stats, indent=2))
         except Exception:
             pass
+
+    def repair_manifest_from_shards(self) -> Dict[str, Any]:
+        """Rebuild manifest.json from existing shard directories."""
+        shard_dirs = sorted(self.shards_root.glob("shard_*"))
+        if not shard_dirs:
+            return {"repaired": False, "reason": "no_shards"}
+
+        shards: List[Dict[str, Any]] = []
+        embedding_dim = 0
+        index_type = "flat"
+        project_path = self._manifest.project_path if self._manifest else ""
+
+        for shard_dir in shard_dirs:
+            shard_id = shard_dir.name
+            manager = self._get_manager(shard_id)
+            stats = manager.get_stats()
+            if not embedding_dim:
+                try:
+                    embedding_dim = int(stats.get("embedding_dim") or 0)
+                except Exception:
+                    embedding_dim = 0
+            if index_type == "flat":
+                candidate = stats.get("index_type")
+                if candidate:
+                    index_type = candidate
+
+            shards.append(
+                {
+                    "id": shard_id,
+                    "path": str(Path("shards") / shard_id),
+                    "vector_count": int(stats.get("total_chunks", 0)),
+                    "index_bytes": int(stats.get("storage_size", 0)),
+                    "metadata_bytes": (shard_dir / "metadata.db").stat().st_size
+                    if (shard_dir / "metadata.db").exists()
+                    else 0,
+                }
+            )
+
+        self._manifest = ShardManifest(
+            version=1,
+            project_path=project_path,
+            embedding_dimension=embedding_dim,
+            index_type=index_type,
+            shard_count=len(shards),
+            shards=shards,
+        )
+        self._manifest.save(self.manifest_path)
+        self._active_shard_id = shards[-1]["id"]
+        self._write_root_stats()
+
+        return {
+            "repaired": True,
+            "shard_count": len(shards),
+            "shards": [s["id"] for s in shards],
+        }
 
     def clear_index(self) -> None:
         for shard in self._manifest.shards:
@@ -347,6 +429,16 @@ class ShardedIndexManager:
             shards=[],
         )
         self._manifest.save(self.manifest_path)
+        # Ensure a fresh active shard exists after a clear to avoid empty manifests.
+        self._active_shard_id = self._create_new_shard()
+        # Clear or regenerate cached root stats to avoid reporting stale counts.
+        try:
+            self.stats_path.unlink()
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+        self._write_root_stats()
 
     def _update_manifest_for_shard(self, shard_id: str, stats: Dict[str, Any]) -> None:
         for shard in self._manifest.shards:

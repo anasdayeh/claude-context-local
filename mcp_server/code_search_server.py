@@ -36,7 +36,7 @@ class CodeSearchServer:
 
         self._indexing_lock = threading.Lock()
         self._job_executor = ThreadPoolExecutor(
-            max_workers=int(os.getenv("CODE_SEARCH_INDEX_WORKERS", "1") or 1),
+            max_workers=int(os.getenv("CODE_SEARCH_INDEX_WORKERS", "2") or 2),
             thread_name_prefix="code-search-index",
         )
         self._jobs = IndexJobManager(
@@ -65,6 +65,27 @@ class CodeSearchServer:
                         # Also check if the FAISS index exists
                         if (index_dir / "code.index").exists():
                              return True
+                        # Accept sharded indexes (per-shard code.index files)
+                        shards_root = index_dir / "shards"
+                        if shards_root.exists():
+                            manifest_path = index_dir / "manifest.json"
+                            shard_dirs = []
+                            if manifest_path.exists():
+                                try:
+                                    payload = json.loads(manifest_path.read_text())
+                                    for shard in payload.get("shards", []) or []:
+                                        shard_path = shard.get("path")
+                                        if shard_path:
+                                            shard_dirs.append(index_dir / shard_path)
+                                        elif shard.get("id"):
+                                            shard_dirs.append(shards_root / shard["id"])
+                                except Exception:
+                                    shard_dirs = []
+                            if not shard_dirs:
+                                shard_dirs = list(shards_root.glob("shard_*"))
+                            for shard_dir in shard_dirs:
+                                if (Path(shard_dir) / "code.index").exists():
+                                    return True
             except Exception:
                 pass
         return False
@@ -75,16 +96,53 @@ class CodeSearchServer:
         index_dir = project_dir / "index"
 
         if not self.ensure_project_indexed(project_path):
-            return {
-                "error": f"Project not indexed: {project_path}",
-                "suggestion": f"Run index_directory('{project_path}') first"
-            }
+            repaired = self._maybe_auto_repair_sharded_index(index_dir)
+            if not repaired:
+                return {
+                    "error": f"Project not indexed: {project_path}",
+                    "suggestion": f"Run index_directory('{project_path}') first"
+                }
 
         self._index_manager = self._build_index_manager(index_dir)
         self._searcher = IntelligentSearcher(self._index_manager, self.embedder)
         self._current_project = project_path
         
         return {"success": True, "project": project_path}
+
+    def _maybe_auto_repair_sharded_index(self, index_dir: Path) -> bool:
+        """Auto-repair empty sharded manifest when shard folders exist."""
+        shards_root = index_dir / "shards"
+        if not shards_root.exists() or not any(shards_root.glob("shard_*")):
+            return False
+
+        manifest_path = index_dir / "manifest.json"
+        needs_repair = True
+        if manifest_path.exists():
+            try:
+                payload = json.loads(manifest_path.read_text())
+                shard_count = int(payload.get("shard_count", 0))
+                shards = payload.get("shards") or []
+                needs_repair = shard_count == 0 or not shards
+            except Exception:
+                needs_repair = True
+
+        if not needs_repair:
+            return False
+
+        try:
+            manager = ShardedIndexManager(str(index_dir))
+            result = manager.repair_manifest_from_shards()
+            if result.get("repaired"):
+                logger.warning(
+                    "Auto-repair: rebuilt shard manifest for %s (shards=%s)",
+                    index_dir,
+                    ",".join(result.get("shards", [])),
+                )
+                return True
+        except Exception as exc:
+            logger.warning("Auto-repair failed for %s: %s", index_dir, exc)
+
+        return False
 
     def _index_directory_impl(
         self,
@@ -283,7 +341,7 @@ class CodeSearchServer:
             if "error" in switch_res:
                 # If project not switched, but we have a current one, we might continue
                 # but it's safer to return the error
-                return [switch_res]
+                return switch_res if as_dict else [switch_res]
         
         if not self._searcher:
             # Try to auto-switch to the last used project or any project
@@ -361,6 +419,9 @@ class CodeSearchServer:
         index_manager = self._build_index_manager(index_dir)
         index_stats = index_manager.get_stats()
         stats.update(index_stats)
+
+        if "sanity_warning" in index_stats:
+            logger.warning("Sanity check: %s", index_stats.get("sanity_warning"))
         
         return stats
 
@@ -378,6 +439,27 @@ class CodeSearchServer:
             "index_statistics": index_stats,
             "model_info": self.embedder.get_model_info(),
         }
+
+    def repair_index(self, project_path: str = None) -> Dict[str, Any]:
+        """Repair sharded index manifests if they are missing/empty."""
+        target_path = project_path or self._current_project
+        if not target_path:
+            return {"error": "No project selected."}
+
+        project_dir = self.get_project_storage_dir(target_path)
+        index_dir = project_dir / "index"
+
+        shards_root = index_dir / "shards"
+        has_shards = shards_root.exists() and any(shards_root.glob("shard_*"))
+        manifest_path = index_dir / "manifest.json"
+        if not manifest_path.exists() and not has_shards:
+            return {"repaired": False, "reason": "no_manifest_or_shards"}
+
+        if has_shards:
+            manager = ShardedIndexManager(str(index_dir))
+            return manager.repair_manifest_from_shards()
+
+        return {"repaired": False, "reason": "not_sharded"}
 
     def list_projects(self, as_dict: bool = True) -> Any:
         """List all indexed projects."""

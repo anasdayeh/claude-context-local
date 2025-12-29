@@ -38,6 +38,10 @@ tools:
 
   clear_index: Clear the search index and metadata for the current project.
 
+  repair_index: |
+    Repair sharded index manifests when shards exist but manifest is empty or missing.
+    Usage: repair_index(project_path="/path/to/project")
+
 help: |
   # Find similar code
 
