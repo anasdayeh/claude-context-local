@@ -135,6 +135,17 @@ class CodeIndexManager:
         except Exception:
             return []
 
+    def fts_delete_by_path(self, path: str) -> None:
+        if not path:
+            return
+        try:
+            with self._fts_lock:
+                with self._fts_connect() as conn:
+                    self._ensure_fts_table(conn)
+                    conn.execute("DELETE FROM chunks_fts WHERE path = ?", (path,))
+        except Exception:
+            pass
+
     def _open_sqlitedict(self, path: Path) -> SqliteDict:
         """Open a SqliteDict with basic corruption recovery."""
         def _open():
@@ -294,6 +305,7 @@ class CodeIndexManager:
         
         # Store metadata and update id map / file map
         sample_metas: List[Dict[str, Any]] = []
+        fts_entries: List[Tuple[str, str, str]] = []
         for i, result in enumerate(embedding_results):
             int_id = int(ids[i])
             prev_entry = self.metadata_db.get(str(int_id))
@@ -307,6 +319,10 @@ class CodeIndexManager:
                 'chunk_id': result.chunk_id,
                 'metadata': result.metadata
             }
+            path = result.metadata.get("relative_path") or result.metadata.get("file_path")
+            content = result.metadata.get("content")
+            if path and content:
+                fts_entries.append((result.chunk_id, path, content))
             new_key = self._normalize_file_key(result.metadata)
             if new_key:
                 self._add_ids_to_file_map(new_key, {int_id})
@@ -339,6 +355,9 @@ class CodeIndexManager:
         except Exception:
             # If commit is unavailable for some reason, continue without failing
             pass
+
+        for chunk_id, path, content in fts_entries:
+            self.fts_upsert(chunk_id, path, content)
         
         # Update statistics
         if update_stats:
@@ -820,6 +839,7 @@ class CodeIndexManager:
             return 0
             
         try:
+            self.fts_delete_by_path(norm_target)
             self.index.remove_ids(np.array(ids_to_remove, dtype=np.int64))
             for iid in ids_to_remove:
                 # Remove from metadata and id_map
