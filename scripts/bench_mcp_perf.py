@@ -17,7 +17,9 @@ def main():
         "search_latency_ms": {"p50": None, "p95": None},
         "meta": {"dry_run": bool(args.dry_run)},
     }
-    Path(args.out).write_text(json.dumps(payload, indent=2))
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(payload, indent=2))
     return 0
 
 

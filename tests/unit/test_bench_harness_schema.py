@@ -13,3 +13,11 @@ def test_bench_harness_schema(tmp_path):
     assert "embedding_throughput_chunks_per_sec" in data
     assert "indexing_time_seconds" in data
     assert "search_latency_ms" in data
+
+
+def test_bench_harness_creates_parent_dirs(tmp_path):
+    out = tmp_path / "nested" / "bench.json"
+    cmd = [sys.executable, "scripts/bench_mcp_perf.py", "--dry-run", f"--out={out}"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    assert result.returncode == 0
+    assert out.exists()
