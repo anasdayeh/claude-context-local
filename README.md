@@ -37,7 +37,7 @@ An intelligent code search system that uses Google's EmbeddingGemma model and ad
 
 - Core functionality working
 - Installation tested on Mac/Linux
-- Benchmark harness (WIP): `scripts/bench_mcp_perf.py --dry-run --out bench.json`
+- Benchmark harness (fixed mode): `uv run python scripts/bench_mcp_perf.py --out logs/bench.json` (also writes a copy to `$CODE_SEARCH_STORAGE/logs/`)
 - Please report issues!
 
 ## Demo
@@ -122,6 +122,16 @@ Open Codex and say: index this codebase. No manual commands needed.
 
 ### 3) Use in Codex
 
+The MCP exposes a clean set of tools (no legacy/`*_v2` variants). To see the complete surface area from inside Codex, run: `list_tools()`.
+
+Common workflows:
+
+- Index: `index_directory("/path/to/repo")` (or `start_index_directory(...)` for explicit background jobs)
+- Search: `search_code("how auth works", file_patterns=["src/**/*.py"], chunk_type="function", search_mode="auto")`
+- Similarity: `find_similar_code(chunk_id="...", k=10)`
+- Inspect: `get_chunk(chunk_id="...")`
+- Health/coverage: `fts_status(project_path="/path/to/repo")`
+
 ### Offline indexing (no Codex usage)
 
 If you want to run indexing yourself (overnight, no token usage), use the MCP pipeline CLI:
@@ -155,6 +165,20 @@ To verify the post-index health (FTS coverage, manifest/stats metadata, per-shar
 ```
 
 The script prints both JSON and human-friendly summaries and now includes manifest/version details, stats storage size, total FTS rows, and per-shard metrics by default (no extra flags required).
+
+### Reset indexes + reindex key projects
+
+To wipe all existing project indexes while preserving the model cache, delete the project artifacts under your storage root:
+
+```bash
+rm -rf ~/.claude_code_search/projects/*
+```
+
+To reindex your key repos sequentially (foreground, one at a time), run:
+
+```bash
+./scripts/reindex_key_projects.sh
+```
 
 ### Repair a broken sharded manifest (no reindex)
 
