@@ -37,7 +37,7 @@ An intelligent code search system that uses Google's EmbeddingGemma model and ad
 
 - Core functionality working
 - Installation tested on Mac/Linux
-- Benchmarks coming soon
+- Benchmark harness (WIP): `scripts/bench_mcp_perf.py --dry-run --out bench.json`
 - Please report issues!
 
 ## Demo
