@@ -1,17 +1,17 @@
 """Shared MCP tool/resource registration."""
 
+import json
 import asyncio
 import logging
-import json
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Any
-from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Optional
 
-from mcp.server.fastmcp import FastMCP, Context
+from fastmcp import Context, FastMCP
 from merkle.merkle_dag import MerkleDAG
 
 from mcp_server.code_search_server import CodeSearchServer
@@ -37,7 +37,9 @@ def _coverage_pct(total: int | None, fts_rows: int | None) -> float | None:
     except Exception:
         return None
     if total > 0:
-        return round((fts_rows / total) * 100, 2)
+        # Cap at 100% to prevent inflated metrics from cross-shard duplication
+        coverage = min(round((fts_rows / total) * 100, 2), 100.0)
+        return coverage
     if fts_rows > 0:
         return 100.0
     return 0.0
@@ -102,6 +104,20 @@ def _infer_last_indexed(server: CodeSearchServer, project_path: Optional[str]) -
         pass
 
     return None, None
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        s = str(value).strip()
+        if not s:
+            return None
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
 
 
 def _shard_summaries(project_dir: Path) -> list[dict]:
@@ -244,30 +260,34 @@ def _extract_request_id(ctx: Optional[Context]) -> Any | None:
 async def _send_progress(ctx: Optional[Context], message: str, progress: Optional[int] = None, total: Optional[int] = None) -> None:
     if ctx is None:
         return
+
+    reporter = getattr(ctx, "report_progress", None)
+    if reporter is not None:
+        try:
+            await reporter(progress=progress, total=total, message=message)
+            return
+        except Exception as exc:
+            logger.debug("Context.report_progress failed: %s", exc)
+
     session = getattr(ctx, "session", None)
-    if session is None:
-        return
-    sender = getattr(session, "send_progress_notification", None)
-    if sender is None:
-        return
-    
+    sender = getattr(session, "send_progress_notification", None) if session is not None else None
     token = _extract_progress_token(ctx)
-    if token is None:
+    if sender is None or token is None:
         return
-        
+
     req_id = _extract_request_id(ctx)
-    
+
     try:
-        # Try newer signature first (supports related_request_id), fall back safely
         import inspect
+
         sig = inspect.signature(sender)
         if "related_request_id" in sig.parameters:
             await sender(
-                progress_token=token, 
-                progress=progress, 
-                total=total, 
+                progress_token=token,
+                progress=progress,
+                total=total,
                 message=message,
-                related_request_id=req_id
+                related_request_id=req_id,
             )
         else:
             await sender(progress_token=token, progress=progress, total=total, message=message)
@@ -318,13 +338,17 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
             meta["did_auto_switch"] = bool(did_auto_switch)
         return meta
 
-    def _error_info(*, code: str, message: str, suggestion: str | None = None, details: dict | None = None) -> dict:
-        payload = {"code": code, "message": message}
-        if suggestion:
-            payload["suggestion"] = suggestion
-        if details:
-            payload["details"] = details
-        return payload
+    async def _maybe_collect_registered_items(method_name: str) -> list:
+        method = getattr(mcp, method_name, None)
+        if method is None:
+            return []
+        try:
+            value = method()
+            if asyncio.iscoroutine(value):
+                value = await value
+            return list(value or [])
+        except Exception:
+            return []
 
     def _augment_dict_response(
         *,
@@ -358,15 +382,13 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
         if result_value is not None and "result" not in out:
             out["result"] = result_value
 
-        # Add structured error info without changing existing `error`/`suggestion` fields.
-        if out.get("ok") is False and "error_info" not in out:
-            message = str(out.get("error") or "Unknown error")
-            suggestion = out.get("suggestion")
-            out["error_info"] = _error_info(
-                code=f"{tool_name.upper()}_ERROR",
-                message=message,
-                suggestion=str(suggestion) if suggestion else None,
-            )
+        # For error responses, ensure flat structure with error and suggestion at top level.
+        # No nested error_info - keep it simple for MCP protocol and agent parsing.
+        if out.get("ok") is False:
+            # Ensure error field exists with a meaningful message
+            if "error" not in out:
+                out["error"] = "Unknown error"
+            # suggestion field stays at top level if present (no changes needed)
 
         return out
 
@@ -448,24 +470,31 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
         query: str,
         k: int = 5,
         search_mode: str = "auto",
-        file_pattern: str = None,
+        file_patterns: list[str] = None,
         chunk_type: str = None,
         include_context: bool = True,
         auto_reindex: bool = False,
-        max_age_minutes: float = 5, project_path: str = None,
+        max_age_minutes: float = 5,
+        project_path: str = None,
         ctx: Optional[Context] = None,
     ) -> dict:
         before_project = _get_active_project_path()
+        # Be lenient: some clients may send a single string despite the list schema.
+        if isinstance(file_patterns, str):
+            file_patterns = [file_patterns]
         result = await _run(
             server.search_code,
             query,
             k,
             search_mode,
-            file_pattern,
+            file_patterns,
+            None,
             chunk_type,
             include_context,
             auto_reindex,
-            max_age_minutes, project_path, True,
+            max_age_minutes,
+            project_path,
+            True,
         )
         coerced = _coerce_result(result)
         if not isinstance(coerced, dict):
@@ -477,9 +506,9 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
 
         # Normalize filters for meta
         fp = None
-        if file_pattern:
-            fp = [file_pattern] if isinstance(file_pattern, str) else file_pattern
-        filters_applied = {"file_pattern": fp, "chunk_type": chunk_type}
+        if file_patterns:
+            fp = list(file_patterns) if isinstance(file_patterns, list) else [str(file_patterns)]
+        filters_applied = {"file_patterns": fp, "chunk_type": chunk_type}
 
         # Determine effective context behavior
         env_include_context = os.getenv("CODE_SEARCH_INCLUDE_CONTEXT", "").lower() in {"1", "true", "yes"}
@@ -500,6 +529,56 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
         manifest_version = manifest.get("version")
 
         results_list = coerced.get("results") or []
+
+        # Observability: report the actual mode used by the underlying searcher.
+        mode_used = None
+        embedder_status = {}
+        try:
+            searcher = getattr(server, "_searcher", None)
+            mode_used = getattr(searcher, "last_search_mode_used", None) if searcher is not None else None
+            embedder_status = server.get_embedder_status()
+        except Exception:
+            mode_used = None
+            embedder_status = {}
+        if not mode_used:
+            mode_used = "semantic" if search_mode == "auto" else search_mode
+
+        # Optional background reindexing when index is stale.
+        reindex_meta: dict[str, Any] = {}
+        if auto_reindex and after_project:
+            try:
+                dt = _parse_iso_datetime(index_last_indexed)
+                now = datetime.now(tz=dt.tzinfo) if dt and dt.tzinfo else datetime.now()
+                age_minutes = (now - dt).total_seconds() / 60 if dt else None
+                threshold = float(max_age_minutes or 0)
+                should_reindex = dt is None or (age_minutes is not None and age_minutes > threshold)
+
+                # Only attempt to reindex real paths.
+                if should_reindex and Path(after_project).exists():
+                    job_result = await _run(server.start_index_job, after_project, None, None, True)
+                    job_result = _coerce_result(job_result)
+                    job = job_result.get("job") if isinstance(job_result, dict) else None
+                    reindex_meta.update(
+                        {
+                            "reindex_started": bool(isinstance(job_result, dict) and job_result.get("success")),
+                            "reindex_deduped": bool(isinstance(job_result, dict) and job_result.get("deduped")),
+                            "reindex_job_id": job.get("job_id") if isinstance(job, dict) else None,
+                            "index_age_minutes": round(age_minutes, 2) if isinstance(age_minutes, (int, float)) else None,
+                            "reindex_threshold_minutes": threshold,
+                        }
+                    )
+                else:
+                    reindex_meta.update(
+                        {
+                            "reindex_started": False,
+                            "index_age_minutes": round(age_minutes, 2) if isinstance(age_minutes, (int, float)) else None,
+                            "reindex_threshold_minutes": threshold,
+                            "reindex_skipped_reason": "fresh" if dt and not should_reindex else "nonexistent_project_path",
+                        }
+                    )
+            except Exception as exc:
+                reindex_meta.update({"reindex_started": False, "reindex_error": str(exc)})
+
         meta = _base_meta(did_auto_switch=did_auto_switch, project_path_used=after_project)
         meta.update(
             {
@@ -507,7 +586,7 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
                 "k_requested": int(k),
                 "k_returned": len(results_list) if isinstance(results_list, list) else None,
                 "search_mode_requested": search_mode,
-                "search_mode_used": "semantic" if search_mode == "auto" else search_mode,
+                "search_mode_used": mode_used,
                 "filters_applied": filters_applied,
                 "project_path_used": after_project,
                 "index_id": index_id,
@@ -518,10 +597,13 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
                 "include_context_effective": include_context_effective,
                 "context_depth": 1 if include_context_effective else 0,
                 "stats_storage_size": stats.get("storage_size"),
+                "embedder_status": embedder_status.get("status"),
+                "embedder_backend": embedder_status.get("backend"),
+                "embedder_failure_summary": embedder_status.get("error"),
             }
         )
+        meta.update(reindex_meta)
         fts_info = _build_fts_status_payload(server, after_project)
-        meta.setdefault("fts_status", fts_info)
         meta.setdefault("fts_coverage_pct", fts_info.get("coverage_pct"))
         meta.setdefault("fts_rows", fts_info.get("fts_rows"))
         meta.setdefault("total_chunks", fts_info.get("total_chunks"))
@@ -550,6 +632,8 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
         incremental: bool = True,
         ctx: Optional[Context] = None,
     ) -> dict:
+        if isinstance(file_patterns, str):
+            file_patterns = [file_patterns]
         if _should_background_index(directory_path, file_patterns):
             await _send_progress(ctx, "indexing started (background job)", progress=0)
             result = await _run(
@@ -629,6 +713,8 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
         incremental: bool = True,
         ctx: Optional[Context] = None,
     ) -> dict:
+        if isinstance(file_patterns, str):
+            file_patterns = [file_patterns]
         result = await _run(
             server.start_index_job,
             directory_path,
@@ -699,49 +785,36 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
         ctx: Optional[Context] = None,
     ) -> dict:
         result = await _run(server.find_similar_code, chunk_id, k)
-        return _coerce_result(result)
-
-    @mcp.tool(description=strings.get("tools", {}).get("find_similar_code_v2", "Find similar code (v2)"))
-    async def find_similar_code_v2(
-        chunk_id: str,
-        k: int = 5,
-        ctx: Optional[Context] = None,
-    ) -> dict:
-        result = await _run(server.find_similar_code, chunk_id, k)
         coerced = _coerce_result(result)
         if isinstance(coerced, dict):
             # Unexpected shape; just augment and return.
-            return _augment_dict_response(tool_name="find_similar_code_v2", response=coerced, meta=_base_meta())
+            return _augment_dict_response(tool_name="find_similar_code", response=coerced, meta=_base_meta())
         items = coerced if isinstance(coerced, list) else []
         return _augment_dict_response(
-            tool_name="find_similar_code_v2",
+            tool_name="find_similar_code",
             response={"results": items},
             meta=_base_meta(),
             result_value=items,
         )
 
     @mcp.tool(description=strings.get("tools", {}).get("get_index_status", "Get index status"))
-    async def get_index_status(ctx: Optional[Context] = None) -> dict:
-        result = await _run(server.get_index_status)
-        coerced = _coerce_result(result)
-        if isinstance(coerced, dict):
-            return _augment_dict_response(
-                tool_name="get_index_status",
-                response=coerced,
-                meta=_base_meta(),
-            )
-        return coerced
-
-    @mcp.tool(description=strings.get("tools", {}).get("get_index_status_v2", "Get index status (v2)"))
-    async def get_index_status_v2(project_path: str = None, ctx: Optional[Context] = None) -> dict:
+    async def get_index_status(project_path: str = None, ctx: Optional[Context] = None) -> dict:
         result = await _run(server.get_index_status, project_path)
         coerced = _coerce_result(result)
         if isinstance(coerced, dict):
-            meta = _base_meta(project_path_used=project_path)
+            try:
+                embedder_status = server.get_embedder_status()
+            except Exception:
+                embedder_status = {}
             return _augment_dict_response(
-                tool_name="get_index_status_v2",
+                tool_name="get_index_status",
                 response=coerced,
-                meta=meta,
+                meta={
+                    **_base_meta(project_path_used=project_path),
+                    "embedder_status": embedder_status.get("status"),
+                    "embedder_backend": embedder_status.get("backend"),
+                    "embedder_failure_summary": embedder_status.get("error"),
+                },
             )
         return coerced
 
@@ -758,7 +831,7 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
             )
         return coerced
 
-    @mcp.tool(description="Show manifest, stats, and shard-level FTS coverage")
+    @mcp.tool(description=strings.get("tools", {}).get("fts_status", "Show manifest, stats, and shard-level FTS coverage"))
     async def fts_status(
         project_path: str | None = None,
         ctx: Optional[Context] = None,
@@ -774,16 +847,11 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
 
     @mcp.tool(description=strings.get("tools", {}).get("list_projects", "List projects"))
     async def list_projects(ctx: Optional[Context] = None) -> dict:
-        result = await _run(server.list_projects, False)
-        return _coerce_result(result)
-
-    @mcp.tool(description=strings.get("tools", {}).get("list_projects_v2", "List projects (v2)"))
-    async def list_projects_v2(ctx: Optional[Context] = None) -> dict:
         result = await _run(server.list_projects, True)
         coerced = _coerce_result(result)
         if isinstance(coerced, dict) and "projects" in coerced:
             return _augment_dict_response(
-                tool_name="list_projects_v2",
+                tool_name="list_projects",
                 response=coerced,
                 meta=_base_meta(),
                 result_value=coerced.get("projects"),
@@ -791,7 +859,7 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
         # Fallback: normalize unexpected shape
         projects = coerced if isinstance(coerced, list) else []
         return _augment_dict_response(
-            tool_name="list_projects_v2",
+            tool_name="list_projects",
             response={"count": len(projects), "projects": projects},
             meta=_base_meta(),
             result_value=projects,
@@ -834,23 +902,7 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
         return coerced
 
     @mcp.tool(description=strings.get("tools", {}).get("clear_index", "Clear index"))
-    async def clear_index(ctx: Optional[Context] = None) -> dict:
-        result = await _run(server.clear_index)
-        try:
-            await ctx.session.send_resource_updated("search://stats")
-        except Exception:
-            pass
-        coerced = _coerce_result(result)
-        if isinstance(coerced, dict):
-            return _augment_dict_response(
-                tool_name="clear_index",
-                response=coerced,
-                meta=_base_meta(),
-            )
-        return coerced
-
-    @mcp.tool(description=strings.get("tools", {}).get("clear_index_v2", "Clear index (v2)"))
-    async def clear_index_v2(project_path: str = None, ctx: Optional[Context] = None) -> dict:
+    async def clear_index(project_path: str = None, ctx: Optional[Context] = None) -> dict:
         result = await _run(server.clear_index, project_path)
         try:
             await ctx.session.send_resource_updated("search://stats")
@@ -859,7 +911,7 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
         coerced = _coerce_result(result)
         if isinstance(coerced, dict):
             return _augment_dict_response(
-                tool_name="clear_index_v2",
+                tool_name="clear_index",
                 response=coerced,
                 meta=_base_meta(project_path_used=project_path),
             )
@@ -926,30 +978,89 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
         """Best-effort introspection so agents can discover available tools/resources."""
         tools = []
         resources = []
-        try:
-            tm = getattr(mcp, "_tool_manager", None)
-            internal = getattr(tm, "_tools", None) if tm is not None else None
-            if isinstance(internal, dict):
-                for name, tool in internal.items():
-                    desc = getattr(tool, "description", "") or ""
-                    tools.append({"name": name, "description": desc})
-        except Exception:
-            tools = []
+        resource_templates = []
+        prompts = []
+        public_tools = await _maybe_collect_registered_items("list_tools")
+        if public_tools:
+            for tool in public_tools:
+                tools.append(
+                    {
+                        "name": getattr(tool, "name", None),
+                        "description": getattr(tool, "description", "") or "",
+                    }
+                )
+        else:
+            try:
+                tm = getattr(mcp, "_tool_manager", None)
+                internal = getattr(tm, "_tools", None) if tm is not None else None
+                if isinstance(internal, dict):
+                    for name, tool in internal.items():
+                        desc = getattr(tool, "description", "") or ""
+                        tools.append({"name": name, "description": desc})
+            except Exception:
+                tools = []
 
-        try:
-            rm = getattr(mcp, "_resource_manager", None)
-            internal_r = getattr(rm, "_resources", None) if rm is not None else None
-            if isinstance(internal_r, dict):
-                for name in internal_r.keys():
-                    resources.append({"uri": name})
-        except Exception:
-            resources = []
+        public_resources = await _maybe_collect_registered_items("list_resources")
+        if public_resources:
+            for resource in public_resources:
+                uri = getattr(resource, "uri", None)
+                if uri:
+                    resources.append({"uri": str(uri)})
+        else:
+            try:
+                rm = getattr(mcp, "_resource_manager", None)
+                internal_r = getattr(rm, "_resources", None) if rm is not None else None
+                if isinstance(internal_r, dict):
+                    for name in internal_r.keys():
+                        if "{" in name and "}" in name:
+                            resource_templates.append({"uri": name})
+                        else:
+                            resources.append({"uri": name})
+            except Exception:
+                resources = []
+                resource_templates = []
+
+        public_templates = await _maybe_collect_registered_items("list_resource_templates")
+        if public_templates:
+            for resource_template in public_templates:
+                uri = getattr(resource_template, "uri_template", None) or getattr(resource_template, "uri", None)
+                if uri:
+                    resource_templates.append({"uri": str(uri)})
+
+        public_prompts = await _maybe_collect_registered_items("list_prompts")
+        if public_prompts:
+            for prompt in public_prompts:
+                prompts.append(
+                    {
+                        "name": getattr(prompt, "name", None),
+                        "description": getattr(prompt, "description", "") or "",
+                    }
+                )
+        else:
+            try:
+                pm = getattr(mcp, "_prompt_manager", None)
+                internal_p = getattr(pm, "_prompts", None) if pm is not None else None
+                if isinstance(internal_p, dict):
+                    for name, prompt in internal_p.items():
+                        desc = getattr(prompt, "description", "") or ""
+                        prompts.append({"name": name, "description": desc})
+            except Exception:
+                prompts = []
 
         payload = {
             "count": len(tools),
             "tools": sorted(tools, key=lambda x: x.get("name", "")),
             "resources": sorted(resources, key=lambda x: x.get("uri", "")),
+            "resource_templates": sorted(resource_templates, key=lambda x: x.get("uri", "")),
+            "prompts": sorted(prompts, key=lambda x: x.get("name", "")),
         }
+        try:
+            embedder_status = server.get_embedder_status()
+        except Exception:
+            embedder_status = {}
+        payload["embedder_status"] = embedder_status.get("status")
+        payload["embedder_backend"] = embedder_status.get("backend")
+        payload["embedder_failure_summary"] = embedder_status.get("error")
         return _augment_dict_response(
             tool_name="list_tools",
             response=payload,

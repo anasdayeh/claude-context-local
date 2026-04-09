@@ -183,7 +183,7 @@ func main() {
             hits = server.search_code(
                 query="helper function",
                 project_path=str(project_path),
-                file_pattern="*.go",
+                file_patterns=["*.go"],
             )
             logger.info("✅ Filtered search execution successful")
 

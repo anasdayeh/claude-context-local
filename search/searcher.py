@@ -3,7 +3,7 @@
 import os
 import re
 import logging
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Set
 from dataclasses import dataclass
 
 from search.indexer import CodeIndexManager
@@ -80,6 +80,9 @@ class IntelligentSearcher:
         self.index_manager = index_manager
         self.embedder = embedder
         self._logger = logging.getLogger(__name__)
+        # The last effective mode used for search(). This is set for observability/meta.
+        self.last_search_mode_used: str = "semantic"
+        self.last_error_summary: Optional[str] = None
         
         # Query patterns for intent detection
         self.query_patterns = {
@@ -109,6 +112,10 @@ class IntelligentSearcher:
             ]
         }
     
+    # Maximum context depth to prevent response bloat.
+    # Higher values cause exponential expansion of context trees.
+    MAX_CONTEXT_DEPTH = 1
+
     def search(
         self,
         query: str,
@@ -118,31 +125,61 @@ class IntelligentSearcher:
         filters: Optional[Dict[str, Any]] = None
     ) -> List[SearchResult]:
         """Semantic search for code understanding.
-        
+
         This provides semantic search capabilities. For complete search coverage:
         - Use this tool for conceptual/functionality queries
         - Use Codex's Grep for exact term matching
         - Combine both for comprehensive results
-        
+
         Args:
             query: Natural language query
             k: Number of results
             search_mode: Currently "semantic" only
-            context_depth: Include related chunks
+            context_depth: Include related chunks (capped at MAX_CONTEXT_DEPTH=1)
             filters: Optional filters
+
+        Note:
+            context_depth is capped at 1 to prevent response bloat. Values > 1
+            would cause exponential expansion of context trees per result.
         """
-        
-        if search_mode == "semantic" or not self._hybrid_enabled():
-            return self._semantic_search(query, k, context_depth, filters)
+        # Cap context_depth to prevent response bloat (BUG #4 fix)
+        safe_depth = min(context_depth, self.MAX_CONTEXT_DEPTH)
 
-        if search_mode in {"auto", "hybrid"}:
-            if self._fts_ready():
-                return self._hybrid_search(query, k, context_depth, filters)
-            if self._hybrid_autobuild():
-                self._ensure_fts_async()
-            return self._semantic_search(query, k, context_depth, filters)
+        if search_mode == "fts":
+            self.last_search_mode_used = "fts"
+            self.last_error_summary = None
+            return self._fts_search_only(query, k, safe_depth, filters)
 
-        return self._semantic_search(query, k, context_depth, filters)
+        try:
+            if search_mode == "semantic" or not self._hybrid_enabled():
+                self.last_search_mode_used = "semantic"
+                self.last_error_summary = None
+                return self._semantic_search(query, k, safe_depth, filters)
+
+            if search_mode in {"auto", "hybrid"}:
+                if self._fts_ready():
+                    self.last_search_mode_used = "hybrid"
+                    self.last_error_summary = None
+                    return self._hybrid_search(query, k, safe_depth, filters)
+                if self._hybrid_autobuild():
+                    self._ensure_fts_async()
+                self.last_search_mode_used = "semantic"
+                self.last_error_summary = None
+                return self._semantic_search(query, k, safe_depth, filters)
+
+            self.last_search_mode_used = "semantic"
+            self.last_error_summary = None
+            return self._semantic_search(query, k, safe_depth, filters)
+        except Exception as exc:
+            self.last_error_summary = str(exc)
+            if self._should_disable_semantic_on_failure(search_mode) and self._fts_ready():
+                self._logger.warning(
+                    "Semantic search unavailable (%s); falling back to FTS-only search",
+                    exc,
+                )
+                self.last_search_mode_used = "fts"
+                return self._fts_search_only(query, k, safe_depth, filters)
+            raise
     
     def _semantic_search(
         self,
@@ -175,11 +212,22 @@ class IntelligentSearcher:
         )
         self._logger.info(f"Index manager returned {len(raw_results)} raw results")
         
+        # Build lightweight per-file context cache once per query to avoid
+        # repeatedly scanning all metadata for each result.
+        context_cache = None
+        if context_depth > 0 and raw_results:
+            target_paths: Set[str] = set()
+            for _chunk_id, _similarity, metadata in raw_results:
+                rel = metadata.get("relative_path")
+                if rel:
+                    target_paths.add(rel)
+            context_cache = self._build_file_context_cache(target_paths)
+
         # Convert to rich search results
         search_results = []
         for chunk_id, similarity, metadata in raw_results:
             result = self._create_search_result(
-                chunk_id, similarity, metadata, context_depth
+                chunk_id, similarity, metadata, context_depth, context_cache
             )
             search_results.append(result)
         
@@ -251,15 +299,74 @@ class IntelligentSearcher:
                 raw_results.sort(key=lambda item: item[1], reverse=True)
                 raw_results = raw_results[:k]
 
+        context_cache = None
+        if context_depth > 0 and raw_results:
+            target_paths: Set[str] = set()
+            for _chunk_id, _similarity, metadata in raw_results:
+                rel = metadata.get("relative_path")
+                if rel:
+                    target_paths.add(rel)
+            context_cache = self._build_file_context_cache(target_paths)
+
         search_results = []
         for chunk_id, similarity, metadata in raw_results:
             result = self._create_search_result(
-                chunk_id, similarity, metadata, context_depth
+                chunk_id, similarity, metadata, context_depth, context_cache
             )
             search_results.append(result)
 
         ranked_results = self._rank_results(search_results, query, intent_tags)
         return ranked_results[:k]
+
+    def _fts_search_only(
+        self,
+        query: str,
+        k: int = 5,
+        context_depth: int = 1,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> List[SearchResult]:
+        normalized_query = normalize_fts_query(self._optimize_query(query))
+        if not normalized_query:
+            return []
+
+        sparse_k = min(max(k * 10, k), 200)
+        raw_hits = self.index_manager.fts_search(normalized_query, sparse_k)
+        raw_results: List[Tuple[str, float, Dict[str, Any]]] = []
+        for rank, (chunk_id, _score) in enumerate(raw_hits, start=1):
+            meta = self.index_manager.get_chunk_by_id(chunk_id)
+            if meta is None:
+                continue
+            raw_results.append((chunk_id, 1.0 / rank, meta))
+
+        if filters:
+            raw_results = self.index_manager.apply_filters(raw_results, filters)
+
+        context_cache = None
+        if context_depth > 0 and raw_results:
+            target_paths: Set[str] = set()
+            for _chunk_id, _similarity, metadata in raw_results:
+                rel = metadata.get("relative_path")
+                if rel:
+                    target_paths.add(rel)
+            context_cache = self._build_file_context_cache(target_paths)
+
+        search_results = []
+        for chunk_id, similarity, metadata in raw_results[:k]:
+            search_results.append(
+                self._create_search_result(
+                    chunk_id, similarity, metadata, context_depth, context_cache
+                )
+            )
+        return search_results[:k]
+
+    def _should_disable_semantic_on_failure(self, search_mode: str) -> bool:
+        if search_mode == "semantic":
+            return False
+        flag = os.getenv(
+            "CODE_SEARCH_SEARCH_DISABLE_SEMANTIC_ON_EMBEDDER_FAILURE",
+            "1",
+        ).lower()
+        return flag not in {"0", "false", "no"}
     
     def _optimize_query(self, query: str) -> str:
         """Optimize query for better embedding generation."""
@@ -286,7 +393,8 @@ class IntelligentSearcher:
         chunk_id: str, 
         similarity: float, 
         metadata: Dict[str, Any],
-        context_depth: int
+        context_depth: int,
+        file_context_cache: Optional[Dict[str, List[Tuple[str, Dict[str, Any]]]]] = None,
     ) -> SearchResult:
         """Create a rich search result with context information."""
         
@@ -300,16 +408,29 @@ class IntelligentSearcher:
         context_info = {}
         
         if context_depth > 0:
+            cached_candidates = None
+            if file_context_cache is not None and relative_path:
+                cached_candidates = file_context_cache.get(relative_path) or []
+
             # Add same-file neighbors as context (avoid FAISS reconstruct to prevent crashes)
-            context_info['file_neighbors'] = self._get_file_neighbors(
-                chunk_id=chunk_id,
-                relative_path=relative_path,
-                window=1,
-            )
+            if cached_candidates is not None:
+                context_info['file_neighbors'] = self._get_file_neighbors_from_candidates(
+                    chunk_id=chunk_id,
+                    candidates=cached_candidates,
+                    window=1,
+                )
+                total_in_file = len(cached_candidates)
+            else:
+                context_info['file_neighbors'] = self._get_file_neighbors(
+                    chunk_id=chunk_id,
+                    relative_path=relative_path,
+                    window=1,
+                )
+                total_in_file = self._count_chunks_in_file(relative_path)
             
             # Add file context
             context_info['file_context'] = {
-                'total_chunks_in_file': self._count_chunks_in_file(relative_path),
+                'total_chunks_in_file': total_in_file,
                 'folder_path': '/'.join(folder_structure) if folder_structure else None
             }
         
@@ -348,21 +469,34 @@ class IntelligentSearcher:
                 cid = str(key)
             yield cid, meta
 
-    def _get_file_neighbors(self, chunk_id: str, relative_path: str, window: int = 1) -> List[Dict[str, Any]]:
-        """Return adjacent chunks in the same file as lightweight context."""
-        if not relative_path:
-            return []
+    def _build_file_context_cache(
+        self,
+        target_paths: Set[str],
+    ) -> Dict[str, List[Tuple[str, Dict[str, Any]]]]:
+        cache: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
+        if not target_paths:
+            return cache
 
-        candidates: List[Tuple[str, Dict[str, Any]]] = []
         for cid, meta in self._iter_all_chunks():
-            if meta.get("relative_path") != relative_path:
+            rel = meta.get("relative_path")
+            if rel not in target_paths:
                 continue
-            candidates.append((cid, meta))
+            cache.setdefault(rel, []).append((cid, meta))
 
+        for rel in list(cache.keys()):
+            cache[rel].sort(
+                key=lambda item: (item[1].get("start_line", 0), item[1].get("end_line", 0))
+            )
+        return cache
+
+    def _get_file_neighbors_from_candidates(
+        self,
+        chunk_id: str,
+        candidates: List[Tuple[str, Dict[str, Any]]],
+        window: int = 1,
+    ) -> List[Dict[str, Any]]:
         if not candidates:
             return []
-
-        candidates.sort(key=lambda item: (item[1].get("start_line", 0), item[1].get("end_line", 0)))
         try:
             idx = next(i for i, (cid, _) in enumerate(candidates) if cid == chunk_id)
         except StopIteration:
@@ -389,6 +523,28 @@ class IntelligentSearcher:
                 }
             )
         return neighbors
+
+    def _get_file_neighbors(self, chunk_id: str, relative_path: str, window: int = 1) -> List[Dict[str, Any]]:
+        """Return adjacent chunks in the same file as lightweight context."""
+        if not relative_path:
+            return []
+
+        candidates: List[Tuple[str, Dict[str, Any]]] = []
+        for cid, meta in self._iter_all_chunks():
+            if meta.get("relative_path") != relative_path:
+                continue
+            candidates.append((cid, meta))
+
+        if not candidates:
+            return []
+
+        candidates.sort(key=lambda item: (item[1].get("start_line", 0), item[1].get("end_line", 0)))
+        try:
+            idx = next(i for i, (cid, _) in enumerate(candidates) if cid == chunk_id)
+        except StopIteration:
+            return []
+
+        return self._get_file_neighbors_from_candidates(chunk_id, candidates, window=window)
     
     def _count_chunks_in_file(self, relative_path: str) -> int:
         """Count total chunks in a specific file."""

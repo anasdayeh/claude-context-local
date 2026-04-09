@@ -2,12 +2,14 @@
 
 import logging
 import gc
+import os
 from typing import List, Dict, Any, Optional, Set
 from dataclasses import dataclass
 import numpy as np
 
 from chunking.code_chunk import CodeChunk
 from embeddings.embedding_models_register import AVAILIABLE_MODELS
+from common_utils import get_available_memory_bytes
 
 class EmbeddingResult:
     """Result of embedding generation for a chunk."""
@@ -48,7 +50,16 @@ class EmbeddingResult:
             return self._metadata_override
         if not self.chunk:
             return {}
-        return {
+        content = self.chunk.content or ""
+        preview = content
+        preview_limit_raw = str(os.getenv("CODE_SEARCH_CONTENT_PREVIEW_CHARS", "320") or "320").strip()
+        try:
+            preview_limit = max(0, int(preview_limit_raw))
+        except Exception:
+            preview_limit = 320
+        if preview_limit > 0 and len(preview) > preview_limit:
+            preview = preview[:preview_limit] + "..."
+        metadata = {
             "name": self.chunk.name,
             "chunk_id": self.chunk_id,
             "chunk_type": self.chunk.chunk_type,
@@ -58,11 +69,14 @@ class EmbeddingResult:
             "file_path": self.chunk.file_path,
             "parent_name": self.chunk.parent_name,
             "tags": self.chunk.tags,
-            "content": self.chunk.content,
-            "content_preview": self.chunk.content,
+            "content": content,
+            "content_preview": preview,
             "folder_structure": self.chunk.folder_structure,
             "model": self.model_name
         }
+        if self.chunk.extra_metadata:
+            metadata.update(self.chunk.extra_metadata)
+        return metadata
 
 class CodeEmbedder:
     """Handles embedding generation for code chunks and search queries using semantic models."""
@@ -75,6 +89,8 @@ class CodeEmbedder:
     ):
         """Initialize code embedder."""
         self._logger = logging.getLogger(__name__)
+        self._status = "not_loaded"
+        self._last_error: Optional[str] = None
 
         # Normalize model name if using known aliases
         if model_name in AVAILIABLE_MODELS:
@@ -102,7 +118,10 @@ class CodeEmbedder:
         except Exception as e:
             msg = f"Failed to load model '{model_name}': {e}"
             self._logger.error(msg)
+            self._status = "failed"
+            self._last_error = msg
             raise RuntimeError(msg) from e
+        self._min_free_ram_bytes = self._resolve_min_free_ram_bytes()
 
     @property
     def raw_model(self):
@@ -122,32 +141,42 @@ class CodeEmbedder:
     def _encode_documents(self, texts: List[str]) -> np.ndarray:
         """Encode documents using robust wrapper methods."""
         encode_kwargs = {"show_progress_bar": False}
-        
-        if hasattr(self._model, "encode_document"):
-            embeddings = self._model.encode_document(texts, **encode_kwargs)
-        else:
-            prompt_name = self._resolve_prompt_name(is_query=False)
-            embeddings = self._model.encode(
-                texts,
-                prompt_name=prompt_name,
-                **encode_kwargs,
-            )
-        return np.asarray(embeddings, dtype=np.float32)
+        try:
+            if hasattr(self._model, "encode_document"):
+                embeddings = self._model.encode_document(texts, **encode_kwargs)
+            else:
+                prompt_name = self._resolve_prompt_name(is_query=False)
+                embeddings = self._model.encode(
+                    texts,
+                    prompt_name=prompt_name,
+                    **encode_kwargs,
+                )
+            self._status = "ready"
+            self._last_error = None
+            return np.asarray(embeddings, dtype=np.float32)
+        except Exception as exc:
+            self._mark_failure(exc)
+            raise
 
     def _encode_queries(self, texts: List[str]) -> np.ndarray:
         """Encode queries using robust wrapper methods."""
         encode_kwargs = {"show_progress_bar": False}
-
-        if hasattr(self._model, "encode_query"):
-            embeddings = self._model.encode_query(texts, **encode_kwargs)
-        else:
-            prompt_name = self._resolve_prompt_name(is_query=True)
-            embeddings = self._model.encode(
-                texts,
-                prompt_name=prompt_name,
-                **encode_kwargs,
-            )
-        return np.asarray(embeddings, dtype=np.float32)
+        try:
+            if hasattr(self._model, "encode_query"):
+                embeddings = self._model.encode_query(texts, **encode_kwargs)
+            else:
+                prompt_name = self._resolve_prompt_name(is_query=True)
+                embeddings = self._model.encode(
+                    texts,
+                    prompt_name=prompt_name,
+                    **encode_kwargs,
+                )
+            self._status = "ready"
+            self._last_error = None
+            return np.asarray(embeddings, dtype=np.float32)
+        except Exception as exc:
+            self._mark_failure(exc)
+            raise
 
     def create_embedding_content(self, chunk: CodeChunk, max_chars: int = 2048) -> str:
         """Create formatted content string for embedding."""
@@ -220,6 +249,25 @@ class CodeEmbedder:
             batch_chunks = chunks[i : i + current_batch]
 
             while True:
+                if self._is_memory_pressure():
+                    if current_batch > 1:
+                        next_batch = max(1, current_batch // 2)
+                        self._notify_progress(
+                            f"Memory-pressure backoff: batch {current_batch}->{next_batch}"
+                        )
+                        self._logger.warning(
+                            "Low available RAM detected; reducing batch size from %d to %d",
+                            current_batch,
+                            next_batch,
+                        )
+                        self._clear_device_cache()
+                        adaptive_batch = next_batch
+                        current_batch = min(adaptive_batch, total - i)
+                        batch_texts = texts[i : i + current_batch]
+                        batch_chunks = chunks[i : i + current_batch]
+                        continue
+                    self._clear_device_cache()
+
                 try:
                     self._logger.info(
                         f"Loop {i}: text_len={len(batch_texts)} chunk_len={len(batch_chunks)}"
@@ -303,10 +351,24 @@ class CodeEmbedder:
             return
 
         try:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-                torch.mps.empty_cache()
+            torch_cuda = getattr(torch, "cuda", None)
+            cuda_is_available = getattr(torch_cuda, "is_available", lambda: False)()
+            if cuda_is_available:
+                try:
+                    torch_cuda.empty_cache()
+                except Exception:
+                    pass
+            else:
+                mps_backend = getattr(torch.backends, "mps", None)
+                if (
+                    mps_backend is not None
+                    and getattr(mps_backend, "is_available", lambda: False)()
+                    and getattr(mps_backend, "is_built", lambda: False)()
+                ):
+                    try:
+                        torch.mps.empty_cache()
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -330,6 +392,33 @@ class CodeEmbedder:
                 return False
         return changed
 
+    def _resolve_min_free_ram_bytes(self) -> int:
+        raw = ""
+        try:
+            import os
+            raw = str(os.getenv("CODE_SEARCH_MIN_FREE_RAM_GB", "") or "").strip()
+        except Exception:
+            raw = ""
+        if raw:
+            try:
+                value = float(raw)
+                if value > 0:
+                    return int(value * 1024 ** 3)
+            except Exception:
+                pass
+        # Default to a conservative floor if unset.
+        return int(1.5 * 1024 ** 3)
+
+    def _is_memory_pressure(self) -> bool:
+        threshold = getattr(self, "_min_free_ram_bytes", None)
+        if not isinstance(threshold, int) or threshold <= 0:
+            threshold = self._resolve_min_free_ram_bytes()
+            self._min_free_ram_bytes = threshold
+        available = get_available_memory_bytes()
+        if available <= 0:
+            return False
+        return available < threshold
+
     def embed_query(self, query: str) -> np.ndarray:
         return self._encode_queries([query])[0]
 
@@ -337,11 +426,51 @@ class CodeEmbedder:
         return self._encode_documents([text])[0]
 
     def get_model_info(self) -> Dict[str, Any]:
-        return self._model.get_model_info()
+        info = {}
+        try:
+            info = self._model.get_model_info()
+        except Exception as exc:
+            self._mark_failure(exc)
+            info = {"status": "failed", "error": str(exc)}
+
+        if not isinstance(info, dict):
+            info = {"status": self._status}
+
+        status = info.get("status") or self._status
+        if status == "loaded":
+            status = "ready"
+        info["status"] = status
+        info.setdefault("model_name", self.model_name)
+        info.setdefault("error", self._last_error)
+        return info
+
+    def health_status(self) -> Dict[str, Any]:
+        info = self.get_model_info()
+        return {
+            "status": info.get("status", self._status),
+            "backend": info.get("backend"),
+            "device": info.get("device"),
+            "error": info.get("error"),
+            "model_name": info.get("model_name", self.model_name),
+        }
+
+    def is_available(self) -> bool:
+        return self.health_status().get("status") == "ready"
+
+    def warmup(self, probe: str = "healthcheck") -> bool:
+        try:
+            self.embed_query(probe)
+            return True
+        except Exception:
+            return False
 
     def cleanup(self):
         if hasattr(self, '_model'):
             self._model.cleanup()
+
+    def _mark_failure(self, exc: Exception) -> None:
+        self._status = "failed"
+        self._last_error = str(exc)
 
     def __del__(self):
         try:

@@ -11,6 +11,8 @@ class FakeMCP:
     def __init__(self):
         self.tools = {}
         self.resources = {}
+        self.resource_templates = {}
+        self.prompts = {}
 
     def tool(self, description=None):
         def decorator(fn):
@@ -20,14 +22,30 @@ class FakeMCP:
 
     def resource(self, name):
         def decorator(fn):
-            self.resources[name] = fn
+            if "{" in name and "}" in name:
+                self.resource_templates[name] = fn
+            else:
+                self.resources[name] = fn
             return fn
         return decorator
 
     def prompt(self, name=None):
         def decorator(fn):
+            self.prompts[name or fn.__name__] = fn
             return fn
         return decorator
+
+    async def list_tools(self):
+        return [type("Tool", (), {"name": name, "description": ""})() for name in self.tools]
+
+    async def list_resources(self):
+        return [type("Resource", (), {"uri": uri})() for uri in self.resources]
+
+    async def list_resource_templates(self):
+        return [type("ResourceTemplate", (), {"uri_template": uri})() for uri in self.resource_templates]
+
+    async def list_prompts(self):
+        return [type("Prompt", (), {"name": name, "description": ""})() for name in self.prompts]
 
 
 class DummyServer:
@@ -39,6 +57,7 @@ class DummyServer:
         query: str,
         k: int = 5,
         search_mode: str = "auto",
+        file_patterns=None,
         file_pattern: str = None,
         chunk_type: str = None,
         include_context: bool = True,
@@ -48,7 +67,19 @@ class DummyServer:
         as_dict: bool = True,
     ):
         self.as_dict = as_dict
-        return {"results": []}
+        return {
+            "results": [],
+            "semantic_available": False,
+            "fallback_mode": "fts",
+            "error_code": "embedder_init_failed",
+        }
+
+    def get_embedder_status(self):
+        return {
+            "status": "failed",
+            "backend": "torch",
+            "error": "embedder bootstrap failed",
+        }
 
 
 @pytest.mark.asyncio
@@ -68,7 +99,8 @@ async def test_mcp_tool_search_code_returns_dict():
 
 
 @pytest.mark.asyncio
-async def test_search_code_meta_includes_fts_status(monkeypatch):
+async def test_search_code_meta_includes_fts_scalars_not_full_payload(monkeypatch):
+    """Test that FTS scalar fields are included in meta, but not the full fts_status payload."""
     mcp = FakeMCP()
     server = DummyServer()
     executor = ThreadPoolExecutor(max_workers=1)
@@ -93,10 +125,35 @@ async def test_search_code_meta_includes_fts_status(monkeypatch):
     search_fn = mcp.tools["search_code"]
     result = await search_fn(query="meta-test")
     meta = result.get("meta", {})
-    assert meta.get("fts_status") is stub_payload
+
+    # Scalar fields should be present
     assert meta.get("fts_coverage_pct") == stub_payload["coverage_pct"]
     assert meta.get("fts_rows") == stub_payload["fts_rows"]
     assert meta.get("total_chunks") == stub_payload["total_chunks"]
     assert meta.get("manifest_project_path") == stub_payload["manifest"]["project_path"]
     assert meta.get("manifest_index_bytes") == stub_payload["manifest_index_bytes"]
     assert meta.get("manifest_path") == stub_payload["manifest_path"]
+    assert meta.get("embedder_status") == "failed"
+    assert meta.get("embedder_backend") == "torch"
+    assert meta.get("embedder_failure_summary") == "embedder bootstrap failed"
+
+    # Full fts_status payload should NOT be included (context window bloat fix)
+    assert meta.get("fts_status") is None
+    # Full manifest should not be in meta
+    assert meta.get("manifest") is None
+
+
+@pytest.mark.asyncio
+async def test_search_code_preserves_structured_embedder_failure_fields():
+    mcp = FakeMCP()
+    server = DummyServer()
+    executor = ThreadPoolExecutor(max_workers=1)
+
+    register_tools(mcp, server, strings={}, executor=executor)
+
+    search_fn = mcp.tools["search_code"]
+    result = await search_fn(query="failure-shape")
+
+    assert result.get("error_code") == "embedder_init_failed"
+    assert result.get("semantic_available") is False
+    assert result.get("fallback_mode") == "fts"

@@ -2,12 +2,12 @@ tools:
   search_code: |
     Search code by natural language query using semantic similarity. Returns ranked results with file paths, line numbers, similarity scores, and code snippets. Use for understanding functionality, finding patterns, or discovering related code.
     Minimal usage: search_code("authentication")
-    Full usage: search_code("authentication", k=10, file_patterns="*.py")
+    Full usage: search_code("authentication", k=10, file_patterns=["src/**/*.py"], chunk_type="function", search_mode="auto")
 
   index_directory: |
     Index a codebase using semantic embeddings.
     Minimal usage: index_directory("/path/to/project")
-    Full usage: index_directory("/path/to/project", project_name="project", file_patterns="*.py", incremental=False)
+    Full usage: index_directory("/path/to/project", project_name="project", file_patterns=["*.py"], incremental=False)
 
   start_index_directory: |
     Start indexing as a background job and return a job_id for polling (recommended for large repos).
@@ -26,7 +26,13 @@ tools:
     Find code chunks functionally similar to a reference chunk. Useful for finding alternative implementations, code duplication, or refactoring related code.
     Usage: find_similar_code(chunk_id from search_code, k=5)
 
-  get_index_status: Get current index statistics and model status.
+  get_stats: |
+    Get indexing statistics for a project (without model info).
+    Usage: get_stats(project_path="/path/to/project")
+
+  get_index_status: |
+    Get index statistics plus embedding model info.
+    Usage: get_index_status(project_path="/path/to/project")
 
   list_projects: List all indexed projects with their metadata.
 
@@ -36,11 +42,24 @@ tools:
 
   index_test_project: Index test project
 
-  clear_index: Clear the search index and metadata for the current project.
+  clear_index: |
+    Clear the search index for a project.
+    Usage: clear_index(project_path="/path/to/project")
 
   repair_index: |
     Repair sharded index manifests when shards exist but manifest is empty or missing.
     Usage: repair_index(project_path="/path/to/project")
+
+  get_chunk: |
+    Get full chunk metadata/content by chunk_id.
+    Usage: get_chunk(chunk_id="...", project_path="/path/to/project")
+
+  fts_status: |
+    Show manifest/stats/shard metrics and FTS coverage for a project.
+    Usage: fts_status(project_path="/path/to/project")
+
+  list_tools: |
+    List tools, resources, resource templates, and prompts exposed by this MCP server.
 
 help: |
   # Find similar code

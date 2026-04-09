@@ -155,6 +155,12 @@ uv run --directory ~/.local/share/claude-context-local \
   --log-file ~/code_search_index.log
 ```
 
+Progress monitoring:
+
+- Foreground with a log file: `tail -f ~/code_search_index.log`
+- Background CLI mode: watch periodic events printed by `scripts/index_repo.py --background`
+- MCP mode: poll `get_index_job_status(job_id="...")`
+
 This uses the same storage/artifacts as the MCP server, so Codex can search immediately once it finishes.
 Running via `uv run --directory ~/.local/share/claude-context-local` reuses the canonical MCP environment and uv cache (no extra venvs).
 
@@ -165,6 +171,21 @@ To verify the post-index health (FTS coverage, manifest/stats metadata, per-shar
 ```
 
 The script prints both JSON and human-friendly summaries and now includes manifest/version details, stats storage size, total FTS rows, and per-shard metrics by default (no extra flags required).
+
+### Incremental refresh for cs-rag
+
+To refresh only changed files without clearing the existing index:
+
+```bash
+CS_RAG_REPO_PATH=/absolute/path/to/cs-rag \
+  /Users/anasdayeh/.local/share/claude-context-local/scripts/reindex_cs_rag_incremental.sh
+```
+
+Progress visibility:
+
+- Script output prints changed files and final status
+- Detailed indexing logs: `tail -f ~/cs-rag-incremental-index.log`
+- Tune checkpoint frequency (and progress event cadence) with `CODE_SEARCH_CHECKPOINT_CHUNKS`
 
 ### Reset indexes + reindex key projects
 
@@ -198,10 +219,18 @@ sharded indexes (manifest + shard `code.index` files) without requiring a root `
 
 Environment variables (set in your MCP server config):
 
+If these values are unset, runtime now applies adaptive defaults from detected
+system memory (especially on Apple Silicon) to reduce OOM pressure while keeping
+throughput reasonable.
+
 - `CODE_SEARCH_STORAGE` (default: `~/.claude_code_search`)
 - `CODE_SEARCH_DATA_DIR` (alias for `CODE_SEARCH_STORAGE`)
 - `CODE_SEARCH_DEVICE` (`cpu`, `mps`, `cuda`, `auto`)
-- `CODE_SEARCH_PRELOAD_MODEL` (`0`/`1`)
+- `CODE_SEARCH_EMBED_BACKEND` (`torch`, `onnx`) embedding runtime backend (default `torch`)
+- `CODE_SEARCH_PRELOAD_MODEL` (`0`/`1`) preload the embedder in the MCP lifespan hook
+- `CODE_SEARCH_RUNTIME_SELFTEST` (`0`/`1`) run a one-time embedder health check at MCP startup (default on in `mcp_server/server.py`)
+- `CODE_SEARCH_SEARCH_DISABLE_SEMANTIC_ON_EMBEDDER_FAILURE` (`0`/`1`) degrade `search_code(search_mode=auto|hybrid)` to FTS-only when semantic bootstrap fails
+- `CODE_SEARCH_IMPORT_STRATEGY` (`embedder_first`, `default`) keep embedder bootstrap ahead of FAISS-backed index initialization
 - `CODE_SEARCH_LOG_LEVEL` (`DEBUG`/`INFO`/`WARNING`/`ERROR`/`CRITICAL`)
 - `CODE_SEARCH_LOG_FILE` (path to a logfile; defaults to stderr if unset)
 - `CODE_SEARCH_CHUNK_BATCH_SIZE` (chunking batch size; default 100)
@@ -211,6 +240,7 @@ Environment variables (set in your MCP server config):
 - `CODE_SEARCH_DISK_WARN_GB` (warn if free disk below this threshold; warn-only)
 - `CODE_SEARCH_LARGE_FILE_MB` (warn on files larger than this size; warn-only)
 - `CODE_SEARCH_PROGRESS_EVERY_FILES` (emit rate-limited progress events every N files; default 50)
+- `CODE_SEARCH_CHECKPOINT_CHUNKS` (save/checkpoint every N chunks during indexing; default `max(chunk_batch*20,1000)`)
 - `CODE_SEARCH_RESUME` (`0`/`1`): resume interrupted full indexing runs from checkpoint (default on)
 - `CODE_SEARCH_ASYNC_INDEX` (`0`/`1`): force background indexing for `index_directory`
 - `CODE_SEARCH_SYNC_INDEX` (`0`/`1`): force synchronous indexing for `index_directory`
@@ -220,8 +250,13 @@ Environment variables (set in your MCP server config):
 - `CODE_SEARCH_JOB_EVENT_BUFFER` (max stored progress events per job; default 200)
 - `CODE_SEARCH_SHARDED_INDEX` (`0`/`1`): enable sharded FAISS indexes
 - `CODE_SEARCH_SHARD_TARGET_BYTES` (target shard size before rollover; default ~512MB)
-- `CODE_SEARCH_SHARD_MEMORY_CAP_GB` (max RAM budget for loaded shards; default 13)
-- `CODE_SEARCH_TRAIN_SAMPLE_MAX` (max training sample vectors stored for IVF readiness; default 25000)
+- `CODE_SEARCH_SHARD_MEMORY_CAP_GB` (max RAM budget for loaded shards; if unset, auto-derived from system RAM)
+- `CODE_SEARCH_SHARD_SEARCH_WORKERS` (parallel shard-search workers; auto-tuned when unset)
+- `CODE_SEARCH_TRAIN_SAMPLE_MAX` (max training sample vectors for IVF readiness; auto-tuned when unset)
+- `CODE_SEARCH_MIN_FREE_RAM_GB` (embedding backoff floor; batch size is reduced below this free-RAM threshold)
+- `CODE_SEARCH_CONTENT_PREVIEW_CHARS` (truncate stored `content_preview` to reduce metadata size; default 320)
+- `CODE_SEARCH_TORCH_NUM_THREADS` (cap torch intra-op threads for inference stability on laptops)
+- `CODE_SEARCH_TORCH_INTEROP_THREADS` (cap torch inter-op threads; usually keep low, e.g. `1`)
 - `CODE_SEARCH_TORCH_BEFORE_FAISS` (`true`/`false`) force torch import before FAISS on startup
 - `CODE_SEARCH_IGNORE_DIRS` (comma-separated extra ignore patterns for indexing/merkle)
 - `CODE_SEARCH_HYBRID` (`0`/`1`) enable hybrid BM25 + vector search when available
@@ -230,6 +265,7 @@ Environment variables (set in your MCP server config):
 - `CODE_SEARCH_HYBRID_SPARSE_K` (sparse candidate count; default 50)
 - `CODE_SEARCH_HYBRID_AUTOBUILD` (`0`/`1`) background FTS build on fallback (default on)
 - `HF_HUB_OFFLINE` (`1` to force offline model loading)
+- `PYTORCH_MPS_HIGH_WATERMARK_RATIO` / `PYTORCH_MPS_LOW_WATERMARK_RATIO` (MPS allocator hard/soft limits; now auto-set conservatively on Apple Silicon when not explicitly provided)
 
 Interact via chat inside Codex; no function calls or commands are required.
 
@@ -322,6 +358,7 @@ The system uses advanced parsing to create semantically meaningful chunks across
 
 - **Tree-sitter for all supported languages** (Python included)
 - **Text fallback** for text-like files or when tree-sitter bindings are missing
+- **Document extraction** for `.pdf` and `.docx` before text chunking
 
 ### Chunk types extracted
 
@@ -343,6 +380,7 @@ Each chunk stores:
 - `decorators` (Python)
 - `tags` (language tag + detected traits)
 - `content` + `content_preview`
+- document metadata such as `document_type`, `block_kind`, `page_number`, `section_title`, `ocr_used`
 
 Language-specific tags include: `async`, `generator`, `export`, `generic`, `component`, plus the language name itself.
 
@@ -371,10 +409,18 @@ Tree-sitter language map:
 - GraphQL: `.graphql`, `.gql`, `.graphqls`
 - Markdown: `.md`
 - Astro: `.astro`
+- Documents: `.pdf`, `.docx`
 
 Text fallback (when tree-sitter is unavailable or for text-like files):
 
 `.txt`, `.csv`, `.tsv`, `.ini`, `.env`, `.sql` (plus any of the above extensions if tree-sitter parsers are missing).
+
+Document extraction:
+
+- `.pdf` via `pymupdf`
+- `.docx` via `python-docx`
+- OCR for scanned PDFs is optional and disabled by default; enable with `CODE_SEARCH_PDF_OCR=1`
+- OCR requires local Tesseract support; if unavailable, indexing continues without OCR
 
 ## Search & Retrieval
 
@@ -396,10 +442,22 @@ Text fallback (when tree-sitter is unavailable or for text-like files):
 
 1. **Import errors**: Ensure all dependencies are installed with `uv sync`
 2. **Model download fails**: Check internet connection and disk space
-3. **Memory issues**: Reduce `CODE_SEARCH_EMBED_BATCH_SIZE`
-4. **No search results**: Verify the codebase was indexed successfully
-5. **FAISS GPU not used**: Ensure `nvidia-smi` is available and CUDA drivers are installed; re-run installer to pick `faiss-gpu-cu12`/`cu11`
-6. **Force offline**: set `HF_HUB_OFFLINE=1`
+3. **Memory issues**: Reduce `CODE_SEARCH_EMBED_BATCH_SIZE`, lower `CODE_SEARCH_TORCH_NUM_THREADS`, and optionally try `CODE_SEARCH_EMBED_BACKEND=onnx`
+4. **`Transport closed` during `search_code`**: enable `CODE_SEARCH_RUNTIME_SELFTEST=1`, keep `CODE_SEARCH_IMPORT_STRATEGY=embedder_first`, and check `get_index_status` / `list_tools` for `embedder_status`, `embedder_backend`, and `embedder_failure_summary`
+5. **No search results**: Verify the codebase was indexed successfully
+6. **FAISS GPU not used**: Ensure `nvidia-smi` is available and CUDA drivers are installed; re-run installer to pick `faiss-gpu-cu12`/`cu11`
+7. **Force offline**: set `HF_HUB_OFFLINE=1`
+
+### Apple Silicon low-memory profile (M1/M2 laptops)
+
+```bash
+export CODE_SEARCH_DEVICE=auto
+export CODE_SEARCH_EMBED_BACKEND=onnx
+export ST_ONNX_PROVIDER=CPUExecutionProvider
+export CODE_SEARCH_EMBED_BATCH_SIZE=2
+export CODE_SEARCH_TORCH_NUM_THREADS=2
+export CODE_SEARCH_TORCH_INTEROP_THREADS=1
+```
 
 ### Ignored directories (for speed and noise reduction)
 

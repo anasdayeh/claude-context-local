@@ -56,7 +56,6 @@ class IndexJob:
             "last_message": self.last_message,
             "error": self.error,
             "result": self.result,
-            "events": [{"ts": e.ts, "message": e.message} for e in list(self.events)],
         }
 
 

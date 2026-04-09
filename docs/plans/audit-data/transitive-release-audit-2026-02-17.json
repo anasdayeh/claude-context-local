@@ -1,0 +1,158 @@
+{
+  "generated_at_utc": "2026-02-17T10:27:11.607267+00:00",
+  "packages": {
+    "transformers": {
+      "current_version": "4.57.6",
+      "releases": [
+        {
+          "tag": "v5.2.0",
+          "name": "v5.2.0: GLM-5, Qwen3.5, Voxtral Realtime, VibeVoice Acoustic Tokenizer",
+          "published_at": "2026-02-16T18:55:53Z",
+          "url": "https://github.com/huggingface/transformers/releases/tag/v5.2.0",
+          "body_excerpt": "## New Model additions ### VoxtralRealtime <img width=\"1920\" height=\"1080\" alt=\"image\" src=\"https://github.com/user-attachments/assets/80e37670-6d70-402b-8c8e-ccfb8c32df2d\" /> VoxtralRealtime is a streaming speech-to-text model from [Mistral AI](https://mistral.ai), designed for real-time automatic speech recognition (ASR). Unlike the offline [Voxtral](./voxtral) model which processes complete audio files, VoxtralRealtime is architected for low-latency, incremental transcription by processing au"
+        },
+        {
+          "tag": "v5.1.0",
+          "name": "v5.1.0: EXAONE-MoE, PP-DocLayoutV3, Youtu-LLM, GLM-OCR",
+          "published_at": "2026-02-05T15:44:54Z",
+          "url": "https://github.com/huggingface/transformers/releases/tag/v5.1.0",
+          "body_excerpt": "## New Model additions ### EXAONE-MoE <img width=\"2278\" height=\"1142\" alt=\"image\" src=\"https://github.com/user-attachments/assets/0c3d5341-0483-49c3-8467-f9784ec94b37\" /> K-EXAONE is a large-scale multilingual language model developed by LG AI Research. Built using a Mixture-of-Experts architecture, K-EXAONE features 236 billion total parameters, with 23 billion active during inference. Performance evaluations across various benchmarks demonstrate that K-EXAONE excels in reasoning, agentic capab"
+        },
+        {
+          "tag": "v5.0.0",
+          "name": "Transformers v5",
+          "published_at": "2026-01-26T10:17:10Z",
+          "url": "https://github.com/huggingface/transformers/releases/tag/v5.0.0",
+          "body_excerpt": "## Transformers v5 release notes <img width=\"1800\" height=\"1013\" alt=\"image\" src=\"https://github.com/user-attachments/assets/7b5187d7-6945-4108-a546-6d1d7bfb55e3\" /> - Highlights - Significant API changes: dynamic weight loading, tokenization - Backwards Incompatible Changes - Bugfixes and improvements We have a migration guide that will be continuously updated available on the `main` branch, please check it out in case you're facing issues: [migration guide](https://github.com/huggingface/trans"
+        },
+        {
+          "tag": "v4.57.6",
+          "name": "Patch release v4.57.6",
+          "published_at": "2026-01-16T10:40:02Z",
+          "url": "https://github.com/huggingface/transformers/releases/tag/v4.57.6",
+          "body_excerpt": "## What's Changed Another fix for qwen vl models that prevented correctly loading the associated model type - this works together with https://github.com/huggingface/transformers/pull/41808 of the previous patch release. * Fixed incorrect model_type for qwen2vl and qwen2.5vl when config is saved and loaded again by @i3hz in https://github.com/huggingface/transformers/pull/41758 **Full Changelog**: https://github.com/huggingface/transformers/compare/v4.57.5...v4.57.6"
+        },
+        {
+          "tag": "v4.57.5",
+          "name": "Patch release v4.57.5",
+          "published_at": "2026-01-13T13:29:13Z",
+          "url": "https://github.com/huggingface/transformers/releases/tag/v4.57.5",
+          "body_excerpt": "## What's Changed Should not have said last patch :wink: These should be the last remaining fixes that got lost in between patches and the transition to v5. * QwenVL: add skipped keys in setattr as well by @zucchini-nlp in https://github.com/huggingface/transformers/pull/41808 * Fix lr_scheduler_parsing by @SunMarc in https://github.com/huggingface/transformers/pull/41322 **Full Changelog**: https://github.com/huggingface/transformers/compare/v4.57.4...v4.57.5"
+        }
+      ]
+    },
+    "optimum-onnx": {
+      "current_version": "0.1.0",
+      "releases": [
+        {
+          "tag": "v0.1.0",
+          "name": "v0.1.0: Transformers 4.56/4.57, Sana, Gemma3-Text",
+          "published_at": "2025-12-23T07:48:21Z",
+          "url": "https://github.com/huggingface/optimum-onnx/releases/tag/v0.1.0",
+          "body_excerpt": "## What's Changed * Transformers 4.56/4.57 support by @IlyasMoutawwakil in https://github.com/huggingface/optimum-onnx/pull/101 * Add sana_600m_512px_diffuser export support by @naomili0924 in https://github.com/huggingface/optimum-onnx/pull/99 * Add support for gemma3-text by @thewh1teagle in https://github.com/huggingface/optimum-onnx/pull/70 * Clean up torch.onnx internal imports by @justinchuby in https://github.com/huggingface/optimum-onnx/pull/86 * Fix NormalizedTextConfigWithGQA for Qwen2"
+        },
+        {
+          "tag": "v0.0.3",
+          "name": "v0.0.3: Patch release",
+          "published_at": "2025-12-23T07:44:07Z",
+          "url": "https://github.com/huggingface/optimum-onnx/releases/tag/v0.0.3",
+          "body_excerpt": "- Fixes torch.onnx.export for torch <= v2.3 #85 **Full Changelog**: https://github.com/huggingface/optimum-onnx/compare/v0.0.2...v0.0.3"
+        },
+        {
+          "tag": "v0.0.2",
+          "name": "v0.0.2: Patch release, Torch 2.9",
+          "published_at": "2025-10-16T09:31:41Z",
+          "url": "https://github.com/huggingface/optimum-onnx/releases/tag/v0.0.2",
+          "body_excerpt": "# Fixes - Fixed compatibility with torch 2.9 and suppressed onnx aten sdpa warning #84 **Full Changelog**: https://github.com/huggingface/optimum-onnx/compare/v0.0.1...v0.0.2"
+        },
+        {
+          "tag": "v0.0.1",
+          "name": "v0.0.1: gpt-oss, DeepSeek v3",
+          "published_at": "2025-10-09T13:10:50Z",
+          "url": "https://github.com/huggingface/optimum-onnx/releases/tag/v0.0.1",
+          "body_excerpt": "### \ufe0f\ud83c\udfd7 \u200bNew architectures support * Add VisualBERT export by @Abdennacer-Badaoui in https://github.com/huggingface/optimum-onnx/pull/6 * Add Arcee export by @Abdennacer-Badaoui in https://github.com/huggingface/optimum-onnx/pull/30 * Add Cohere, Helium & StableLM export by @Abdennacer-Badaoui in https://github.com/huggingface/optimum-onnx/pull/43 * Add DeepseekV3 export by @Abdennacer-Badaoui in https://github.com/huggingface/optimum-onnx/pull/47 * Add Nemotron export by @Abdennacer-Badaoui in h"
+        }
+      ]
+    },
+    "onnxruntime": {
+      "current_version": "1.24.1",
+      "releases": [
+        {
+          "tag": "v1.24.1",
+          "name": "ONNX Runtime v1.24.1",
+          "published_at": "2026-02-06T00:00:13Z",
+          "url": "https://github.com/microsoft/onnxruntime/releases/tag/v1.24.1",
+          "body_excerpt": "## \ud83d\udce2 Announcements & Breaking Changes ### Platform Support Changes - **Python 3.10 wheels are no longer published** \u2014 Please upgrade to Python 3.11+ - **Python 3.14 support added** - **Free-threaded Python (PEP 703)** \u2014 Added support for Python 3.13t and 3.14t in Linux ([#26786](https://github.com/microsoft/onnxruntime/pull/26786)) - **x86_64 binaries for macOS/iOS are no longer provided and minimum macOS is raised to 14.0** ### API Version - **ORT_API_VERSION** updated to **24** ([#26418](https"
+        },
+        {
+          "tag": "v1.23.2",
+          "name": "ONNX Runtime v1.23.2",
+          "published_at": "2025-10-25T04:15:21Z",
+          "url": "https://github.com/microsoft/onnxruntime/releases/tag/v1.23.2",
+          "body_excerpt": ""
+        },
+        {
+          "tag": "v1.23.1",
+          "name": "ONNX Runtime v1.23.1",
+          "published_at": "2025-10-08T04:12:55Z",
+          "url": "https://github.com/microsoft/onnxruntime/releases/tag/v1.23.1",
+          "body_excerpt": "## What's Changed - Fix Attention GQA implementation on CPU (#25966) - Address edge GetMemInfo edge cases (#26021) - Implement new Python APIs (#25999) - MemcpyFromHost and MemcpyToHost support for plugin EPs (#26088) - [TRT RTX EP] Fix bug for generating the correct subgraph in GetCapability (#26132) - add session_id_ to LogEvaluationStart/Stop, LogSessionCreationStart (#25590) - [build] fix WebAssembly build on macOS/arm64 (#25653) - [CPU] MoE Kernel (#25958) - [CPU] Block-wise QMoE kernel for"
+        },
+        {
+          "tag": "v1.23.0",
+          "name": "ONNX Runtime v1.23.0",
+          "published_at": "2025-09-26T04:33:48Z",
+          "url": "https://github.com/microsoft/onnxruntime/releases/tag/v1.23.0",
+          "body_excerpt": "# Announcements - This release introduces Execution Provider (EP) Plugin API, which is a new infrastructure for building plugin-based EPs. (#24887 , #25137, #25124, #25147, #25127, #25159, #25191, #2524) - This release introduces the ability to dynamically download and install execution providers. This feature is exclusively available in the WinML build and requires Windows 11 version 25H2 or later. To leverage this new capability, C/C++/C# users should use the builds distributed through the Win"
+        },
+        {
+          "tag": "v1.22.2",
+          "name": "ONNX Runtime v1.22.2",
+          "published_at": "2025-08-13T16:53:48Z",
+          "url": "https://github.com/microsoft/onnxruntime/releases/tag/v1.22.2",
+          "body_excerpt": "# What's new? This release adds an optimized CPU/MLAS implementation of DequantizeLinear (8 bit) and introduces the build option client_package_build, which enables default options that are more appropriate for client/on-device workloads (e.g., disable thread spinning by default). ## Build System & Packages - Add \u2013client_package_build option ([#25351](https://github.com/microsoft/onnxruntime/pull/25351)) - @jywu-msft - Remove the python installation steps from win-qnn-arm64-ci-pipeline.yml ([#25"
+        }
+      ]
+    },
+    "torch": {
+      "current_version": "2.9.1",
+      "releases": [
+        {
+          "tag": "v2.10.0",
+          "name": "PyTorch 2.10.0 Release",
+          "published_at": "2026-01-21T17:05:16Z",
+          "url": "https://github.com/pytorch/pytorch/releases/tag/v2.10.0",
+          "body_excerpt": "# PyTorch 2.10.0 Release Notes - [Highlights](#highlights) - [Backwards Incompatible Changes](#backwards-incompatible-changes) - [Deprecations](#deprecations) - [New Features](#new-features) - [Improvements](#improvements) - [Bug fixes](#bug-fixes) - [Performance](#performance) - [Documentation](#documentation) - [Developers](#developers) - [Security](#security) # Highlights <table> <tr> <td> <strong>Python 3.14</strong> support for <code>torch.compile()</code>. Python 3.14t (freethreaded build)"
+        },
+        {
+          "tag": "v2.9.1",
+          "name": "PyTorch 2.9.1 Release, bug fix release",
+          "published_at": "2025-11-12T19:27:19Z",
+          "url": "https://github.com/pytorch/pytorch/releases/tag/v2.9.1",
+          "body_excerpt": "This release is meant to fix the following issues (regressions / silent correctness): ### Tracked Regressions Significant Memory Regression in F.conv3d with bfloat16 Inputs in PyTorch 2.9.0 ([#166643](https://github.com/pytorch/pytorch/issues/166643)) This release provides work around this issue. If you are impacted please install nvidia-cudnn package version 9.15+ from pypi. ([#166480](https://github.com/pytorch/pytorch/pull/166480)) ([#167111](https://github.com/pytorch/pytorch/pull/167111)) #"
+        },
+        {
+          "tag": "v2.9.0",
+          "name": "2.9 Release Notes",
+          "published_at": "2025-10-15T17:12:27Z",
+          "url": "https://github.com/pytorch/pytorch/releases/tag/v2.9.0",
+          "body_excerpt": "# PyTorch 2.9.0 Release Notes - [Highlights](#highlights) - [Backwards Incompatible Changes](#backwards-incompatible-changes) - [Deprecations](#deprecations) - [New Features](#new-features) - [Improvements](#improvements) - [Bug fixes](#bug-fixes) - [Performance](#performance) - [Documentation](#documentation) - [Developers](#developers) - [Security](#security) # Highlights <table> <tr> <td><strong>Unstable (API-Unstable)</strong></td> </tr> <tr> <td>Updates to the stable libtorch ABI for third-"
+        },
+        {
+          "tag": "v2.8.0",
+          "name": "PyTorch 2.8.0 Release",
+          "published_at": "2025-08-06T17:06:10Z",
+          "url": "https://github.com/pytorch/pytorch/releases/tag/v2.8.0",
+          "body_excerpt": "# PyTorch 2.8.0 Release Notes - [Highlights](#highlights) - [Backwards Incompatible Changes](#backwards-incompatible-changes) - [Deprecations](#deprecations) - [New Features](#new-features) - [Improvements](#improvements) - [Bug fixes](#bug-fixes) - [Performance](#performance) - [Documentation](#documentation) - [Developers](#developers) # Highlights <table> <tr> <td><strong>Unstable</strong></td> </tr> <tr> <td>torch::stable::Tensor</td> </tr> <tr> <td>High-performance quantized LLM inference o"
+        },
+        {
+          "tag": "v2.7.1",
+          "name": "PyTorch 2.7.1 Release, bug fix release",
+          "published_at": "2025-06-04T18:13:15Z",
+          "url": "https://github.com/pytorch/pytorch/releases/tag/v2.7.1",
+          "body_excerpt": "This release is meant to fix the following issues (regressions / silent correctness): ### Torch.compile Fix Excessive cudagraph re-recording for HF LLM models ([#152287](https://github.com/pytorch/pytorch/pull/152287)) Fix torch.compile on some HuggingFace models ([#151154](https://github.com/pytorch/pytorch/pull/151154)) Fix crash due to Exception raised inside torch.autocast ([#152503](https://github.com/pytorch/pytorch/pull/152503)) Improve Error logging in torch.compile ([#149831](https://gi"
+        }
+      ]
+    }
+  }
+}

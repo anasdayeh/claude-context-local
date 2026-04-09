@@ -58,3 +58,28 @@ def test_progress_callback_receives_backoff_message(monkeypatch):
     embedder.embed_chunks(_make_chunks(2), batch_size=4)
 
     assert any("batch" in msg.lower() for msg in messages)
+
+
+def test_embedder_reduces_batch_on_memory_pressure(monkeypatch):
+    embedder = CodeEmbedder.__new__(CodeEmbedder)
+    embedder.model_name = "test"
+    embedder._logger = logging.getLogger("test")
+    embedder._clear_device_cache = lambda: None
+    embedder._min_free_ram_bytes = 2 * 1024 ** 3
+    messages = []
+    embedder._progress_callback = messages.append
+
+    def fake_available_memory():
+        return 256 * 1024 ** 2
+
+    monkeypatch.setattr("embeddings.embedder.get_available_memory_bytes", fake_available_memory)
+
+    def fake_encode(texts):
+        return np.ones((len(texts), 3), dtype=np.float32)
+
+    embedder._encode_documents = fake_encode
+
+    results = embedder.embed_chunks(_make_chunks(3), batch_size=4)
+
+    assert len(results) == 3
+    assert any("memory-pressure backoff" in msg.lower() for msg in messages)

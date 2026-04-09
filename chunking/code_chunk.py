@@ -30,6 +30,7 @@ class CodeChunk:
     # Context metadata
     complexity_score: int = 0  # estimated complexity
     tags: List[str] = None  # semantic tags like 'database', 'auth', 'error_handling'
+    extra_metadata: Dict[str, Any] = None
     
     def __post_init__(self):
         if self.decorators is None:
@@ -38,6 +39,8 @@ class CodeChunk:
             self.imports = []
         if self.tags is None:
             self.tags = []
+        if self.extra_metadata is None:
+            self.extra_metadata = {}
         
         # Extract folder structure from path
         if self.file_path and not self.folder_structure:

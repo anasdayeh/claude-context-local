@@ -54,7 +54,12 @@ class EmbeddingModel(ABC):
             if torch.cuda.is_available():
                 return "cuda"
             try:
-                if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() and torch.backends.mps.is_built():
+                mps_backend = getattr(torch.backends, "mps", None)
+                if (
+                    mps_backend is not None
+                    and getattr(mps_backend, "is_available", lambda: False)()
+                    and getattr(mps_backend, "is_built", lambda: False)()
+                ):
                     return "mps"
             except Exception:
                 pass
@@ -73,7 +78,12 @@ class EmbeddingModel(ABC):
 
         if requested == "mps":
             try:
-                if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available() and torch.backends.mps.is_built():
+                mps_backend = getattr(torch.backends, "mps", None)
+                if (
+                    mps_backend is not None
+                    and getattr(mps_backend, "is_available", lambda: False)()
+                    and getattr(mps_backend, "is_built", lambda: False)()
+                ):
                     return "mps"
             except Exception:
                 pass

@@ -3,11 +3,12 @@ set -euo pipefail
 
 REPO_PATH="/Users/anasdayeh/.local/share/claude-context-local"
 BASE_DIR="/Users/anasdayeh/.local/share/claude-context-local"
-STORAGE_ROOT="${CODE_SEARCH_STORAGE:-$HOME/code-search-storage}"
+STORAGE_ROOT="${CODE_SEARCH_STORAGE:-$HOME/.claude_code_search}"
 
 export CODE_SEARCH_STORAGE="$STORAGE_ROOT"
 export CODE_SEARCH_DATA_DIR="${CODE_SEARCH_DATA_DIR:-$CODE_SEARCH_STORAGE}"
 export CODE_SEARCH_DEVICE="${CODE_SEARCH_DEVICE:-auto}"
+export CODE_SEARCH_EMBED_BACKEND="${CODE_SEARCH_EMBED_BACKEND:-torch}"
 export CODE_SEARCH_PRELOAD_MODEL="${CODE_SEARCH_PRELOAD_MODEL:-0}"
 export CODE_SEARCH_LOG_LEVEL="${CODE_SEARCH_LOG_LEVEL:-INFO}"
 export CODE_SEARCH_LOG_FILE="${CODE_SEARCH_LOG_FILE:-}"
@@ -29,6 +30,8 @@ export CODE_SEARCH_SHARDED_INDEX="${CODE_SEARCH_SHARDED_INDEX:-1}"
 export CODE_SEARCH_SHARD_TARGET_BYTES="${CODE_SEARCH_SHARD_TARGET_BYTES:-}"
 export CODE_SEARCH_SHARD_MEMORY_CAP_GB="${CODE_SEARCH_SHARD_MEMORY_CAP_GB:-}"
 export CODE_SEARCH_TRAIN_SAMPLE_MAX="${CODE_SEARCH_TRAIN_SAMPLE_MAX:-}"
+export CODE_SEARCH_TORCH_NUM_THREADS="${CODE_SEARCH_TORCH_NUM_THREADS:-}"
+export CODE_SEARCH_TORCH_INTEROP_THREADS="${CODE_SEARCH_TORCH_INTEROP_THREADS:-}"
 export CODE_SEARCH_TORCH_BEFORE_FAISS="${CODE_SEARCH_TORCH_BEFORE_FAISS:-}"
 export CODE_SEARCH_IGNORE_DIRS="${CODE_SEARCH_IGNORE_DIRS:-}"
 export CODE_SEARCH_HYBRID="${CODE_SEARCH_HYBRID:-1}"
@@ -46,18 +49,15 @@ PY
 
 rm -rf "$CODE_SEARCH_STORAGE/projects/$proj_id"
 
-nohup uv run --directory "$BASE_DIR" \
+uv run --directory "$BASE_DIR" \
   python "$BASE_DIR/scripts/index_repo.py" \
   "$REPO_PATH" \
   --project-name claude-context-local \
   --sharded \
-  --background \
-  --log-file "$HOME/claude-context-local-index.log" \
-  > "$HOME/claude-context-local-index.out" 2>&1 &
+  --log-file "$HOME/claude-context-local-index.log"
 
-echo "Started background reindex for: $REPO_PATH"
+echo "Reindex finished for: $REPO_PATH"
 echo "Log: $HOME/claude-context-local-index.log"
-echo "Output: $HOME/claude-context-local-index.out"
 
 echo "FTS check command (run after job completes):"
 echo "/Users/anasdayeh/.local/share/claude-context-local/scripts/check_claude_context_local_fts.sh"

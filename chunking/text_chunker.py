@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from chunking.code_chunk import CodeChunk
 
@@ -35,6 +35,20 @@ class TextChunker:
             content = path.read_text(encoding="utf-8", errors="replace")
         except Exception:
             return []
+
+        return self.chunk_text(content, str(path))
+
+    def chunk_text(
+        self,
+        content: str,
+        file_path: str,
+        *,
+        chunk_type: str = "text",
+        name: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        extra_metadata: Optional[Dict[str, object]] = None,
+    ) -> List[CodeChunk]:
+        path = Path(file_path)
 
         if not content.strip():
             return []
@@ -75,23 +89,8 @@ class TextChunker:
 
         flush(len(lines))
 
-        folder_parts = []
-        if self.root_path:
-            try:
-                rel_path = path.relative_to(self.root_path)
-                folder_parts = list(rel_path.parent.parts)
-                relative_path = str(rel_path)
-            except ValueError:
-                folder_parts = [path.parent.name] if path.parent.name else []
-                relative_path = str(path)
-        else:
-            folder_parts = [path.parent.name] if path.parent.name else []
-            relative_path = str(path)
-
-        ext = path.suffix.lower().lstrip(".")
-        tags = ["text"]
-        if ext:
-            tags.append(ext)
+        folder_parts, relative_path = self._path_metadata(path)
+        final_tags = list(tags or self._default_tags(path))
 
         code_chunks: List[CodeChunk] = []
         for i, chunk in enumerate(chunks, start=1):
@@ -100,13 +99,34 @@ class TextChunker:
                     file_path=str(path),
                     relative_path=relative_path,
                     folder_structure=folder_parts,
-                    chunk_type="text",
+                    chunk_type=chunk_type,
                     content=chunk.content,
                     start_line=chunk.start_line,
                     end_line=chunk.end_line,
-                    name=f"{path.name}:{i}",
-                    tags=tags,
+                    name=name or f"{path.name}:{i}",
+                    tags=list(final_tags),
+                    extra_metadata=dict(extra_metadata or {}),
                 )
             )
 
         return code_chunks
+
+    def _default_tags(self, path: Path) -> List[str]:
+        ext = path.suffix.lower().lstrip(".")
+        tags = ["text"]
+        if ext:
+            tags.append(ext)
+        return tags
+
+    def _path_metadata(self, path: Path) -> tuple[List[str], str]:
+        folder_parts = []
+        if self.root_path:
+            try:
+                rel_path = path.relative_to(self.root_path)
+                folder_parts = list(rel_path.parent.parts)
+                return folder_parts, str(rel_path)
+            except ValueError:
+                folder_parts = [path.parent.name] if path.parent.name else []
+                return folder_parts, str(path)
+        folder_parts = [path.parent.name] if path.parent.name else []
+        return folder_parts, str(path)

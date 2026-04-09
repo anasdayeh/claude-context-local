@@ -4,8 +4,8 @@ import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-import numpy as np
 import torch
+import numpy as np
 from sentence_transformers import SentenceTransformer
 
 from embeddings.embedding_model import EmbeddingModel
@@ -20,6 +20,7 @@ class SentenceTransformerModel(EmbeddingModel):
         cache_dir: Optional[str] = None,
         device: str = "auto",
         trust_remote_code: bool = False,
+        backend: Optional[str] = None,
     ):
         """Initialize SentenceTransformer model."""
         super().__init__(device)
@@ -29,16 +30,50 @@ class SentenceTransformerModel(EmbeddingModel):
         self._logger = logging.getLogger(__name__)
         
         # State tracking
-        self.backend = "torch"
+        env_backend = str(os.environ.get("CODE_SEARCH_EMBED_BACKEND", "") or "").strip().lower()
+        requested_backend = (backend or env_backend or "torch").strip().lower()
+        if requested_backend not in {"torch", "onnx"}:
+            requested_backend = "torch"
+        self.backend = requested_backend
         self._model_loaded = False
         self._fallback_attempted = False
+        self._load_error: Optional[str] = None
+
+    def _effective_device_for_backend(self, backend: str) -> str:
+        if backend == "onnx" and self._device == "mps":
+            # ONNX Runtime on Apple Silicon typically runs via CPU/CoreML providers.
+            return "cpu"
+        return self._device
+
+    def _apply_torch_thread_limits(self) -> None:
+        if self.backend != "torch":
+            return
+        raw_threads = str(os.environ.get("CODE_SEARCH_TORCH_NUM_THREADS", "") or "").strip()
+        raw_interop = str(os.environ.get("CODE_SEARCH_TORCH_INTEROP_THREADS", "") or "").strip()
+        try:
+            if raw_threads:
+                threads = max(1, int(raw_threads))
+                torch.set_num_threads(threads)
+        except Exception:
+            pass
+        try:
+            if raw_interop:
+                interop = max(1, int(raw_interop))
+                torch.set_num_interop_threads(interop)
+        except Exception:
+            pass
 
     @property
     def model(self) -> SentenceTransformer:
         """Lazy load the model."""
         if not self._model_loaded:
-            self.__dict__["model"] = self._load_model()
-            self._model_loaded = True
+            try:
+                self.__dict__["model"] = self._load_model()
+                self._model_loaded = True
+                self._load_error = None
+            except Exception as exc:
+                self._load_error = str(exc)
+                raise
         return self.__dict__["model"]
 
     def _load_model(self) -> SentenceTransformer:
@@ -66,24 +101,27 @@ class SentenceTransformerModel(EmbeddingModel):
                 model_kwargs["export"] = export_flag.lower() in {"1", "true", "yes"}
 
         try:
-            return SentenceTransformer(
+            self._apply_torch_thread_limits()
+            model = SentenceTransformer(
                 model_source,
                 cache_folder=self.cache_dir,
-                device=self._device,
+                device=self._effective_device_for_backend(backend),
                 trust_remote_code=self.trust_remote_code,
                 backend=backend,
                 model_kwargs=model_kwargs if model_kwargs else None,
             )
+            return self._maybe_quantize_onnx(model)
         except Exception as e:
             if backend == "onnx":
                 self._logger.warning(
                     f"Failed to load ONNX backend, falling back to PyTorch: {e}"
                 )
                 self.backend = "torch" # Update state
+                self._apply_torch_thread_limits()
                 return SentenceTransformer(
                     model_source,
                     cache_folder=self.cache_dir,
-                    device=self._device,
+                    device=self._effective_device_for_backend("torch"),
                     trust_remote_code=self.trust_remote_code,
                 )
             raise
@@ -224,14 +262,22 @@ class SentenceTransformerModel(EmbeddingModel):
     def get_model_info(self) -> Dict[str, Any]:
         """Get model information."""
         if not self._model_loaded:
-            return {"status": "not_loaded"}
+            return {
+                "status": "failed" if self._load_error else "not_loaded",
+                "model_name": self.model_name,
+                "device": self._effective_device_for_backend(self.backend),
+                "backend": self.backend,
+                "error": self._load_error,
+            }
 
         return {
             "model_name": self.model_name,
             "embedding_dimension": self.get_embedding_dimension(),
             "max_seq_length": getattr(self.model, 'max_seq_length', 'unknown'),
             "device": str(self.model.device),
-            "status": "loaded"
+            "backend": self.backend,
+            "status": "loaded",
+            "error": None,
         }
 
     def cleanup(self):
@@ -249,14 +295,25 @@ class SentenceTransformerModel(EmbeddingModel):
                     except Exception:
                         pass
             
-            # Clear caches
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            # Clear caches (guard for interpreter shutdown states)
+            torch_cuda = getattr(torch, "cuda", None)
+            cuda_is_available = getattr(torch_cuda, "is_available", lambda: False)()
+            if cuda_is_available:
                 try:
-                    torch.mps.empty_cache()
+                    torch_cuda.empty_cache()
                 except Exception:
                     pass
+            else:
+                mps_backend = getattr(torch.backends, "mps", None)
+                if (
+                    mps_backend is not None
+                    and getattr(mps_backend, "is_available", lambda: False)()
+                    and getattr(mps_backend, "is_built", lambda: False)()
+                ):
+                    try:
+                        torch.mps.empty_cache()
+                    except Exception:
+                        pass
 
             self._reset_model()
             self._logger.info("Model cleaned up and memory freed")

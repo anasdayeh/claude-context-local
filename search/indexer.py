@@ -11,7 +11,6 @@ import fnmatch
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
-import faiss
 from sqlitedict import SqliteDict
 from embeddings.embedder import EmbeddingResult
 from chunking.code_chunk import CodeChunk
@@ -22,10 +21,21 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
-try:
-    faiss.omp_set_num_threads(1)
-except Exception:
-    pass
+
+_FAISS_MODULE = None
+
+
+def _get_faiss():
+    global _FAISS_MODULE
+    if _FAISS_MODULE is None:
+        import faiss as _faiss
+
+        try:
+            _faiss.omp_set_num_threads(1)
+        except Exception:
+            pass
+        _FAISS_MODULE = _faiss
+    return _FAISS_MODULE
 
 
 class CodeIndexManager:
@@ -137,6 +147,24 @@ class CodeIndexManager:
                     conn.execute(
                         "INSERT INTO chunks_fts(chunk_id, path, content) VALUES (?, ?, ?)",
                         (chunk_id, path, content),
+                    )
+        except Exception:
+            pass
+
+    def fts_upsert_many(self, entries: List[Tuple[str, str, str]]) -> None:
+        if not entries:
+            return
+        cleaned = [(cid, path, content) for cid, path, content in entries if cid and path and content]
+        if not cleaned:
+            return
+        try:
+            with self._fts_lock:
+                with self._fts_connect() as conn:
+                    self._ensure_fts_table(conn)
+                    conn.executemany("DELETE FROM chunks_fts WHERE chunk_id = ?", [(cid,) for cid, _, _ in cleaned])
+                    conn.executemany(
+                        "INSERT INTO chunks_fts(chunk_id, path, content) VALUES (?, ?, ?)",
+                        cleaned,
                     )
         except Exception:
             pass
@@ -337,6 +365,7 @@ class CodeIndexManager:
     def _load_index(self):
         """Load existing FAISS index or create new one."""
         if self.index_path.exists():
+            faiss = _get_faiss()
             self._logger.info(f"Loading existing index from {self.index_path}")
             self._index = faiss.read_index(str(self.index_path))
             # If GPU support is available, optionally move to GPU for runtime speed
@@ -371,10 +400,12 @@ class CodeIndexManager:
         """Check whether the current index is legacy (no IDMap2 wrapper)."""
         if self.index is None:
             return False
+        faiss = _get_faiss()
         return not isinstance(self.index, faiss.IndexIDMap2)
 
     def create_index(self, embedding_dimension: int, index_type: str = "flat"):
         """Create a new FAISS index with ID mapping."""
+        faiss = _get_faiss()
         if index_type == "flat":
             base_index = faiss.IndexFlatIP(embedding_dimension)
             self._index = faiss.IndexIDMap2(base_index)
@@ -400,6 +431,7 @@ class CodeIndexManager:
             self.create_index(embedding_dim, "flat")
 
         embeddings = np.array([r.embedding for r in embedding_results], dtype=np.float32)
+        faiss = _get_faiss()
         faiss.normalize_L2(embeddings)
 
         ids = np.array([self._get_or_create_int_id(r.chunk_id) for r in embedding_results], dtype=np.int64)
@@ -466,8 +498,7 @@ class CodeIndexManager:
             # If commit is unavailable for some reason, continue without failing
             pass
 
-        for chunk_id, path, content in fts_entries:
-            self.fts_upsert(chunk_id, path, content)
+        self.fts_upsert_many(fts_entries)
         
         # Update statistics
         if update_stats:
@@ -475,6 +506,7 @@ class CodeIndexManager:
 
     def _gpu_is_available(self) -> bool:
         """Check if GPU FAISS support is available and GPUs are present."""
+        faiss = _get_faiss()
         try:
             if not hasattr(faiss, 'StandardGpuResources'):
                 return False
@@ -557,6 +589,7 @@ class CodeIndexManager:
         query_embedding = np.array(query_embedding, dtype=np.float32)
         if query_embedding.ndim == 1:
             query_embedding = query_embedding.reshape(1, -1)
+        faiss = _get_faiss()
         faiss.normalize_L2(query_embedding)
 
         # Search the index (widen if filtering)
@@ -741,6 +774,7 @@ class CodeIndexManager:
         if self._index is None:
             return {}
 
+        faiss = _get_faiss()
         base = self._index
         try:
             if isinstance(base, faiss.IndexIDMap2):
@@ -804,6 +838,7 @@ class CodeIndexManager:
         if hasattr(base, "nlist"):
             return "ivf"
         try:
+            faiss = _get_faiss()
             if isinstance(base, faiss.IndexFlat):
                 return "flat"
         except Exception:
@@ -855,6 +890,7 @@ class CodeIndexManager:
     def save_index(self, extra_metadata: Optional[Dict[str, Any]] = None) -> None:
         """Save index and metadata to disk."""
         if self._index:
+            faiss = _get_faiss()
             index_to_save = self._index
             if self._on_gpu:
                 index_to_save = faiss.index_gpu_to_cpu(self._index)
@@ -934,6 +970,8 @@ class CodeIndexManager:
             
         ids_to_remove = []
         norm_target = Path(file_path).as_posix()
+        fts_chunk_ids: List[str] = []
+        fts_paths: set[str] = set()
 
         mapped_ids = self.file_map_db.get(norm_target)
         if mapped_ids:
@@ -953,7 +991,18 @@ class CodeIndexManager:
             return 0
             
         try:
-            self.fts_delete_by_path(norm_target)
+            for iid in ids_to_remove:
+                entry = self.metadata_db.get(str(iid))
+                if not entry:
+                    continue
+                chunk_id = entry.get("chunk_id")
+                if chunk_id:
+                    fts_chunk_ids.append(chunk_id)
+                meta = entry.get("metadata", {})
+                key = self._normalize_file_key(meta)
+                if key:
+                    fts_paths.add(key)
+
             self.index.remove_ids(np.array(ids_to_remove, dtype=np.int64))
             for iid in ids_to_remove:
                 # Remove from metadata and id_map
@@ -972,11 +1021,40 @@ class CodeIndexManager:
 
             if mapped_ids:
                 self.file_map_db.pop(norm_target, None)
+
+            try:
+                self.metadata_db.commit()
+                self.id_map_db.commit()
+                self.file_map_db.commit()
+            except Exception:
+                pass
+
+            self._fts_delete_entries(fts_chunk_ids, fts_paths | {norm_target})
                 
             return len(ids_to_remove)
         except Exception as e:
             self._logger.error(f"Failed to remove IDs: {e}")
             return 0
+
+    def _fts_delete_entries(self, chunk_ids: List[str], paths: set[str]) -> None:
+        if not chunk_ids and not paths:
+            return
+        try:
+            with self._fts_lock:
+                with self._fts_connect() as conn:
+                    self._ensure_fts_table(conn)
+                    if chunk_ids:
+                        conn.executemany(
+                            "DELETE FROM chunks_fts WHERE chunk_id = ?",
+                            [(chunk_id,) for chunk_id in chunk_ids],
+                        )
+                    if paths:
+                        conn.executemany(
+                            "DELETE FROM chunks_fts WHERE path = ?",
+                            [(path,) for path in sorted(paths)],
+                        )
+        except Exception:
+            pass
 
     def _normalize_file_key(self, meta: Optional[Dict[str, Any]]) -> Optional[str]:
         if not isinstance(meta, dict):

@@ -11,6 +11,8 @@ class FakeMCP:
     def __init__(self):
         self.tools = {}
         self.resources = {}
+        self.resource_templates = {}
+        self.prompts = {}
 
     def tool(self, description=None):
         def decorator(fn):
@@ -20,14 +22,30 @@ class FakeMCP:
 
     def resource(self, name):
         def decorator(fn):
-            self.resources[name] = fn
+            if "{" in name and "}" in name:
+                self.resource_templates[name] = fn
+            else:
+                self.resources[name] = fn
             return fn
         return decorator
 
     def prompt(self, name=None):
         def decorator(fn):
+            self.prompts[name or fn.__name__] = fn
             return fn
         return decorator
+
+    async def list_tools(self):
+        return [type("Tool", (), {"name": name, "description": ""})() for name in self.tools]
+
+    async def list_resources(self):
+        return [type("Resource", (), {"uri": uri})() for uri in self.resources]
+
+    async def list_resource_templates(self):
+        return [type("ResourceTemplate", (), {"uri_template": uri})() for uri in self.resource_templates]
+
+    async def list_prompts(self):
+        return [type("Prompt", (), {"name": name, "description": ""})() for name in self.prompts]
 
 
 class StorageServer:

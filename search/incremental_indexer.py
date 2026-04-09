@@ -73,7 +73,11 @@ class IncrementalIndexer:
         self.disk_warn_gb = self._read_env_int_allow_zero("CODE_SEARCH_DISK_WARN_GB", 5)
         self.large_file_mb = self._read_env_int_allow_zero("CODE_SEARCH_LARGE_FILE_MB", 20)
         self._progress_callback = None
-        self._checkpoint_interval = self.chunk_batch_size * 5
+        default_checkpoint = max(self.chunk_batch_size * 20, 1000)
+        self._checkpoint_interval = self._read_env_int(
+            "CODE_SEARCH_CHECKPOINT_CHUNKS",
+            default_checkpoint,
+        )
         self._progress_every_files = self._read_env_int("CODE_SEARCH_PROGRESS_EVERY_FILES", 50)
 
     def _read_env_int(self, name: str, default: int) -> int:

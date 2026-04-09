@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from common_utils import get_available_memory_bytes
+from common_utils import get_available_memory_bytes, get_total_memory_bytes
 from search.indexer import CodeIndexManager
 from search.hybrid import normalize_fts_query, rrf_fuse
 from search.shard_manifest import ShardManifest
@@ -109,7 +109,16 @@ class ShardedIndexManager:
         self._active_shard_id = self._create_new_shard()
 
     def _compute_budget_bytes(self) -> int:
-        cap_gb = float(os.getenv("CODE_SEARCH_SHARD_MEMORY_CAP_GB", "13") or 13)
+        raw_cap = str(os.getenv("CODE_SEARCH_SHARD_MEMORY_CAP_GB", "") or "").strip()
+        if raw_cap:
+            try:
+                cap_gb = float(raw_cap)
+            except Exception:
+                cap_gb = 6.0
+        else:
+            total_bytes = get_total_memory_bytes()
+            total_gb = (float(total_bytes) / (1024 ** 3)) if total_bytes > 0 else 0.0
+            cap_gb = max(2.0, min(12.0, total_gb * 0.35 if total_gb > 0 else 6.0))
         cap_bytes = int(cap_gb * 1024 ** 3)
         available = get_available_memory_bytes()
         if available <= 0:
@@ -186,7 +195,12 @@ class ShardedIndexManager:
                 manager = self._get_manager(shard_id, enforce_budget=False)
                 return manager.search(query_embedding, k=k, filters=filters)
 
-            with ThreadPoolExecutor(max_workers=min(4, len(group))) as pool:
+            raw_workers = str(os.getenv("CODE_SEARCH_SHARD_SEARCH_WORKERS", "2") or "2").strip()
+            try:
+                worker_limit = max(1, int(raw_workers))
+            except Exception:
+                worker_limit = 2
+            with ThreadPoolExecutor(max_workers=min(worker_limit, len(group))) as pool:
                 for shard_results in pool.map(_search_shard, group):
                     all_results.append(shard_results)
 

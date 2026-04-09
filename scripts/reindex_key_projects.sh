@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_PATH="/Users/anasdayeh/Downloads/CS-RAG"
 BASE_DIR="/Users/anasdayeh/.local/share/claude-context-local"
 STORAGE_ROOT="${CODE_SEARCH_STORAGE:-$HOME/.claude_code_search}"
 
@@ -41,31 +40,73 @@ export CODE_SEARCH_HYBRID_SPARSE_K="${CODE_SEARCH_HYBRID_SPARSE_K:-}"
 export CODE_SEARCH_HYBRID_AUTOBUILD="${CODE_SEARCH_HYBRID_AUTOBUILD:-1}"
 export HF_HUB_OFFLINE="${HF_HUB_OFFLINE:-}"
 
-mkdir -p "$CODE_SEARCH_STORAGE/projects"
-
-proj_id=$(uv run --directory "$BASE_DIR" python - <<'PY'
-from mcp_server.code_search_server import CodeSearchServer
-print(CodeSearchServer().get_project_storage_dir("/Users/anasdayeh/Downloads/CS-RAG").name)
-PY
+PROJECT_PATHS=(
+  "/Users/anasdayeh/Downloads/CS-RAG"
+  "/Users/anasdayeh/.local/share/claude-context-local"
+  "/Users/anasdayeh/Library/Mobile Documents/com~apple~CloudDocs/Developer projects/instagram-follower-tracker-v9-audited"
+  "/Users/anasdayeh/czkawka-opt/czkawka"
+  "/Users/anasdayeh/Library/Mobile Documents/com~apple~CloudDocs/Downloads/doccrawl_project"
+  "/Users/anasdayeh/Downloads/ADS_Website"
+  "/Users/anasdayeh/Library/Mobile Documents/com~apple~CloudDocs/Downloads/pippa---ai-practice-assistant (3)"
 )
 
-rm -rf "$CODE_SEARCH_STORAGE/projects/$proj_id"
+PROJECT_NAMES=(
+  "CS-RAG"
+  "claude-context-local"
+  "instagram-follower-tracker-v9-audited"
+  "czkawka"
+  "doccrawl_project"
+  "ADS_Website"
+  "pippa-ai-practice-assistant"
+)
 
-uv run --directory "$BASE_DIR" \
-  python "$BASE_DIR/scripts/index_repo.py" \
-  "$REPO_PATH" \
-  --project-name CS-RAG \
-  --sharded \
-  --log-file "$HOME/cs-rag-index.log"
+if [[ "${#PROJECT_PATHS[@]}" -ne "${#PROJECT_NAMES[@]}" ]]; then
+  echo "PROJECT_PATHS and PROJECT_NAMES length mismatch"
+  exit 2
+fi
 
-echo "Reindex finished for: $REPO_PATH"
-echo "Log: $HOME/cs-rag-index.log"
+projects_dir="$CODE_SEARCH_STORAGE/projects"
+if [[ -d "$projects_dir" ]]; then
+  echo "Clearing all existing project indexes under: $projects_dir"
+  rm -rf "$projects_dir"/*
+else
+  mkdir -p "$projects_dir"
+fi
 
-echo "FTS check command (run after job completes):"
-echo "/Users/anasdayeh/.local/share/claude-context-local/scripts/check_cs_rag_fts.sh"
+echo "Starting sequential reindex (foreground)"
 
-echo ""
-echo "Project id: $proj_id"
-echo "Expected metadata db (non-sharded): $CODE_SEARCH_STORAGE/projects/$proj_id/index/metadata.db"
-echo "Expected metadata db (sharded): $CODE_SEARCH_STORAGE/projects/$proj_id/index/shards/shard_000/metadata.db"
-echo "Expected stats.json: $CODE_SEARCH_STORAGE/projects/$proj_id/index/stats.json"
+to_safe_name() {
+  printf "%s" "$1" | tr -cs '[:alnum:]' '_' | sed 's/^_\+//;s/_\+$//'
+}
+
+for i in "${!PROJECT_PATHS[@]}"; do
+  repo_path="${PROJECT_PATHS[$i]}"
+  project_name="${PROJECT_NAMES[$i]}"
+
+  if [[ ! -d "$repo_path" ]]; then
+    echo "Skipping missing path: $repo_path"
+    continue
+  fi
+
+  safe_name=$(to_safe_name "$project_name")
+
+  proj_id=$(uv run --directory "$BASE_DIR" python - <<PY
+from mcp_server.code_search_server import CodeSearchServer
+print(CodeSearchServer().get_project_storage_dir("$repo_path").name)
+PY
+  )
+
+  echo "Reindexing $project_name ($proj_id): $repo_path"
+  uv run --directory "$BASE_DIR" \
+    python "$BASE_DIR/scripts/index_repo.py" \
+    "$repo_path" \
+    --project-name "$project_name" \
+    --sharded \
+    --log-file "$HOME/${safe_name}-index.log"
+
+  echo "Finished: $project_name"
+  echo "Log: $HOME/${safe_name}-index.log"
+  echo ""
+done
+
+echo "All requested projects completed."

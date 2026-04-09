@@ -28,6 +28,9 @@
 ## [Unreleased] - 2025-12-23
 
 ### Fixed
+- **embeddings/embedding_model.py**: Hardened MPS device detection to avoid `NoneType` backend errors when `torch.backends.mps` is absent or partially initialized.
+- **embeddings/sentence_transformer.py**: Made cleanup cache clears resilient to interpreter shutdown (guarded CUDA/MPS checks).
+- **embeddings/embedder.py**: Made device cache clears resilient to interpreter shutdown (guarded CUDA/MPS checks).
 - **search/incremental_indexer.py**: Added env-driven batch sizing and unified glob matching to make `file_patterns` more reliable for large index runs.
 - **merkle/merkle_dag.py**: Added CODE_SEARCH_IGNORE_DIRS support to skip heavy build/vendor folders globally during indexing.
 - **mcp_server/mcp_tools.py**: Improved progress token extraction robustness and added `related_request_id` support for progress notifications.

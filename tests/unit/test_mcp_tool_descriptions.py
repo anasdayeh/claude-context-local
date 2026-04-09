@@ -1,5 +1,7 @@
 """Tests for MCP tool descriptions and their lengths."""
 
+import asyncio
+
 from mcp_server.code_search_server import CodeSearchServer
 from mcp_server.code_search_mcp import CodeSearchMCP
 
@@ -11,7 +13,8 @@ class TestMCPToolDescriptions:
         """Setup test by getting tools from MCP."""
         server = CodeSearchServer()
         mcp = CodeSearchMCP(server)
-        self.tools = mcp._tool_manager._tools
+        tools = asyncio.run(mcp.list_tools())
+        self.tools = {tool.name: tool for tool in tools}
 
     def _assert_description_length(self, tool_name):
         """Get tool description length."""

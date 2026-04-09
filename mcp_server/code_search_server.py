@@ -10,13 +10,11 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
-from common_utils import get_storage_dir
-from search.indexer import CodeIndexManager
+from common_utils import get_storage_dir, apply_adaptive_runtime_defaults
 from embeddings.embedder import CodeEmbedder
 from chunking.multi_language_chunker import MultiLanguageChunker
 from search.searcher import IntelligentSearcher
 from mcp_server.index_jobs import IndexJobManager
-from search.sharded_index_manager import ShardedIndexManager
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +23,22 @@ class CodeSearchServer:
     """Main server class managing indexing and search operations."""
 
     def __init__(self):
+        applied_defaults = apply_adaptive_runtime_defaults()
+        if applied_defaults:
+            logger.info("Applied adaptive runtime defaults: %s", applied_defaults)
+
+        self.import_strategy = os.getenv("CODE_SEARCH_IMPORT_STRATEGY", "embedder_first").strip().lower() or "embedder_first"
+        self.runtime_selftest_enabled = os.getenv("CODE_SEARCH_RUNTIME_SELFTEST", "0").lower() not in {"0", "false", "no"}
+        self.semantic_fallback_enabled = os.getenv(
+            "CODE_SEARCH_SEARCH_DISABLE_SEMANTIC_ON_EMBEDDER_FAILURE",
+            "1",
+        ).lower() not in {"0", "false", "no"}
         self.storage_root = get_storage_dir()
         # Default embedder uses local models/ directory if configured in CodeSearchServer init
         device = os.getenv("CODE_SEARCH_DEVICE", "auto")
         self.embedder = CodeEmbedder(cache_dir=str(self.storage_root / "models"), device=device)
         self.chunker = MultiLanguageChunker()
+        self._embedder_status: Dict[str, Any] = self.embedder.health_status()
         self._current_project = None
         self._index_manager = None
         self._searcher = None
@@ -42,6 +51,8 @@ class CodeSearchServer:
         self._jobs = IndexJobManager(
             event_buffer_size=int(os.getenv("CODE_SEARCH_JOB_EVENT_BUFFER", "200") or 200)
         )
+        if self.runtime_selftest_enabled:
+            self._run_runtime_selftest()
 
     def get_project_storage_dir(self, directory_path: str) -> Path:
         """Get unique storage directory for a project path."""
@@ -138,6 +149,7 @@ class CodeSearchServer:
             return False
 
         try:
+            from search.sharded_index_manager import ShardedIndexManager
             manager = ShardedIndexManager(str(index_dir))
             result = manager.repair_manifest_from_shards()
             if result.get("repaired"):
@@ -211,6 +223,7 @@ class CodeSearchServer:
             try:
                 project_dir = self.get_project_storage_dir(directory_path)
                 index_dir = project_dir / "index"
+                from search.indexer import CodeIndexManager
                 CodeIndexManager(str(index_dir)).save_index(extra_metadata={
                     "project_name": project_name or Path(directory_path).name,
                     "project_path": directory_path,
@@ -335,6 +348,8 @@ class CodeSearchServer:
         query: str,
         k: int = 5,
         search_mode: str = "auto",
+        file_patterns: Optional[List[str]] = None,
+        # Back-compat: older callers used a singular pattern string.
         file_pattern: str = None,
         chunk_type: str = None,
         include_context: bool = True,
@@ -344,38 +359,69 @@ class CodeSearchServer:
         as_dict: bool = True,
     ) -> List[Dict[str, Any]]:
         """Implementation of search_code tool."""
-        if project_path:
+        # Determine which project to use, with clear priority:
+        # 1. Explicit project_path parameter
+        # 2. Currently cached project (self._current_project)
+        # 3. Auto-discover first available indexed project
+        target_project = project_path or self._current_project
+
+        # If we have a target project but searcher is not loaded (or stale),
+        # explicitly switch to ensure state is properly initialized.
+        # This handles the case where get_index_status() was called but didn't load searcher.
+        if target_project and not self._searcher:
+            switch_res = self.switch_project(target_project)
+            if "error" in switch_res:
+                # Explicit project_path failed - return error
+                if project_path:
+                    return switch_res if as_dict else [switch_res]
+                # Cached project failed - clear it and try auto-discovery
+                self._current_project = None
+                target_project = None
+        elif project_path and project_path != self._current_project:
+            # Explicit project_path differs from current - switch to it
             switch_res = self.switch_project(project_path)
             if "error" in switch_res:
-                # If project not switched, but we have a current one, we might continue
-                # but it's safer to return the error
                 return switch_res if as_dict else [switch_res]
-        
+
+        # If still no searcher, try auto-discovery of any indexed project
         if not self._searcher:
-            # Try to auto-switch to the last used project or any project
-            if self._current_project:
-                self.switch_project(self._current_project)
-            else:
-                projects = self.list_projects(as_dict=False)
-                if isinstance(projects, dict):
-                    projects = projects.get("projects", [])
-                if projects:
-                   self.switch_project(projects[0]["project_path"])
-        
+            projects = self.list_projects(as_dict=False)
+            if isinstance(projects, dict):
+                projects = projects.get("projects", [])
+            if projects:
+                # Try each project until one successfully loads
+                for proj in projects:
+                    proj_path = proj.get("project_path")
+                    if proj_path and proj_path != "unknown":
+                        switch_res = self.switch_project(proj_path)
+                        if "error" not in switch_res and self._searcher:
+                            break
+
+        # Final check - if still no searcher, we truly have no usable project
         if not self._searcher:
             return {"error": "No project selected. Provide project_path or run index_directory first."}
 
         try:
+            embedder_status = self.get_embedder_status()
             # Respect both tool parameter and env var for backward compatibility/global override
             env_include_context = os.getenv("CODE_SEARCH_INCLUDE_CONTEXT", "").lower() in {"1", "true", "yes"}
             context_depth = 1 if (include_context or env_include_context) else 0
             
             filters = {}
-            if file_pattern:
-                # Support both single string and list if needed by internal searcher
-                filters['file_pattern'] = [file_pattern] if isinstance(file_pattern, str) else file_pattern
+            if file_patterns is None and file_pattern:
+                file_patterns = [file_pattern]
+            if isinstance(file_patterns, str):
+                file_patterns = [file_patterns]
+            if file_patterns:
+                filters["file_pattern"] = list(file_patterns)
             if chunk_type:
                 filters['chunk_type'] = chunk_type
+
+            if (
+                embedder_status.get("status") == "failed"
+                and search_mode == "semantic"
+            ):
+                return self._semantic_unavailable_response(fallback_mode="none")
                 
             results = self._searcher.search(
                 query, 
@@ -387,11 +433,29 @@ class CodeSearchServer:
             
             # Map search results to the format expected by the MCP tool
             tool_results = [res.to_search_tool_dict() for res in results]
+            response = {"results": tool_results}
+            if isinstance(self._searcher, IntelligentSearcher):
+                mode_used = getattr(self._searcher, "last_search_mode_used", None)
+                if mode_used == "fts":
+                    response.update(
+                        {
+                            "semantic_available": False,
+                            "fallback_mode": "fts",
+                            "error_code": "embedder_init_failed",
+                            "error": self.get_embedder_status().get("error"),
+                        }
+                    )
             if as_dict:
-                return {"results": tool_results}
+                return response
             return tool_results
         except Exception as e:
+            self._refresh_embedder_status()
             logger.error(f"Search failed: {e}")
+            if search_mode == "semantic" or not self.semantic_fallback_enabled:
+                return self._semantic_unavailable_response(
+                    error=str(e),
+                    fallback_mode="none",
+                )
             return {"error": str(e)}
 
     def find_similar_code(self, chunk_id: str, k: int = 5) -> List[Dict[str, Any]]:
@@ -443,9 +507,14 @@ class CodeSearchServer:
         if "files_indexed" not in index_stats:
             index_stats["files_indexed"] = self._count_indexed_files(stats.get("project_path"))
 
+        embedder_status = self.get_embedder_status()
+
         return {
             "index_statistics": index_stats,
             "model_info": self.embedder.get_model_info(),
+            "embedder_status": embedder_status.get("status"),
+            "embedder_backend": embedder_status.get("backend"),
+            "embedder_failure_summary": embedder_status.get("error"),
         }
 
     def repair_index(self, project_path: str = None) -> Dict[str, Any]:
@@ -537,16 +606,62 @@ class CodeSearchServer:
         """Return a sharded manager when enabled or when manifest exists."""
         manifest_path = index_dir / "manifest.json"
         flag = os.getenv("CODE_SEARCH_SHARDED_INDEX", "").lower()
+        if self.import_strategy == "embedder_first":
+            self._refresh_embedder_status()
+        from search.indexer import CodeIndexManager
         if flag in {"1", "true", "yes"} or (flag not in {"0", "false", "no"} and manifest_path.exists()):
+            from search.sharded_index_manager import ShardedIndexManager
             return ShardedIndexManager(str(index_dir))
         return CodeIndexManager(str(index_dir))
 
     def _maybe_start_model_preload(self) -> None:
         """Preload the embedding model in background if requested."""
         try:
-            self.embedder.embed_query("warmup")
+            self._warmup_embedder("warmup")
         except Exception:
-            pass
+            logger.warning("Background embedder preload failed", exc_info=True)
+
+    def _run_runtime_selftest(self) -> None:
+        self._warmup_embedder("healthcheck")
+
+    def _warmup_embedder(self, probe: str) -> bool:
+        ok = self.embedder.warmup(probe)
+        self._refresh_embedder_status()
+        if ok:
+            logger.info("Embedder warmup succeeded (probe=%s)", probe)
+        else:
+            logger.warning("Embedder warmup failed (probe=%s): %s", probe, self._embedder_status.get("error"))
+        return ok
+
+    def _refresh_embedder_status(self) -> Dict[str, Any]:
+        try:
+            self._embedder_status = self.embedder.health_status()
+        except Exception as exc:
+            self._embedder_status = {
+                "status": "failed",
+                "backend": None,
+                "device": None,
+                "error": str(exc),
+                "model_name": getattr(self.embedder, "model_name", None),
+            }
+        return dict(self._embedder_status)
+
+    def get_embedder_status(self) -> Dict[str, Any]:
+        return self._refresh_embedder_status()
+
+    def _semantic_unavailable_response(
+        self,
+        *,
+        error: Optional[str] = None,
+        fallback_mode: str = "none",
+    ) -> Dict[str, Any]:
+        embedder_status = self.get_embedder_status()
+        return {
+            "error": error or embedder_status.get("error") or "Semantic search is unavailable.",
+            "error_code": "embedder_init_failed",
+            "semantic_available": False,
+            "fallback_mode": fallback_mode,
+        }
 
     def clear_index(self, project_path: str = None) -> Dict[str, Any]:
         """Clear the search index for a project."""

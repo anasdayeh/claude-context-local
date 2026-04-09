@@ -88,6 +88,15 @@ codex mcp add claude_context_local --scope user -- uv run --directory ~/.local/s
 codex mcp add claude_context_local -- uv run --directory ~/.local/share/claude-context-local python mcp_server/server.py --transport stdio
 ```
 
+### MCP Tools (Canonical)
+
+This server intentionally exposes a single consolidated tool set (no legacy/`*_v2` tools). Use `list_tools()` inside Codex to discover:
+
+- `search_code`, `find_similar_code`, `get_chunk`
+- `index_directory`, `start_index_directory`, `get_index_job_status`, `cancel_index_job`
+- `get_stats`, `get_index_status`, `list_projects`, `switch_project`, `clear_index`, `repair_index`
+- `fts_status`
+
 ## MCP Environment Options
 
 - `CODE_SEARCH_STORAGE`: Base directory for indexes and model cache.
@@ -203,6 +212,7 @@ Data is stored in `~/.claude_code_search/` (configurable via `CODE_SEARCH_STORAG
 
 - **Tree-sitter for all supported languages** (Python included)
 - **Text fallback** for text-like files or when tree-sitter bindings are missing
+- **Document extraction** for `.pdf` and `.docx` before text chunking
 
 ### Chunk Types Extracted
 
@@ -224,6 +234,7 @@ Each chunk stores:
 - `decorators` (Python)
 - `tags` (language + detected traits)
 - `content` + `content_preview`
+- document metadata such as `document_type`, `block_kind`, `page_number`, `section_title`, `ocr_used`
 
 Language-specific tags include: `async`, `generator`, `export`, `generic`, `component`, plus the language tag.
 
@@ -252,10 +263,18 @@ Tree-sitter language map:
 - GraphQL: `.graphql`, `.gql`, `.graphqls`
 - Markdown: `.md`
 - Astro: `.astro`
+- Documents: `.pdf`, `.docx`
 
 Text fallback (when tree-sitter is unavailable or for text-like files):
 
 `.txt`, `.csv`, `.tsv`, `.ini`, `.env`, `.sql` (plus any of the above extensions if tree-sitter parsers are missing).
+
+Document extraction:
+
+- `.pdf` via `pymupdf`
+- `.docx` via `python-docx`
+- OCR for scanned PDFs is optional and disabled by default; enable with `CODE_SEARCH_PDF_OCR=1`
+- OCR requires local Tesseract support; if unavailable, indexing continues without OCR
 
 ## Search & Retrieval
 

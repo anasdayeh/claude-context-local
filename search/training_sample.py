@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+from common_utils import get_total_memory_bytes
 
 
 class TrainingSampleStore:
@@ -136,8 +137,19 @@ class TrainingSampleStore:
 
 
 def resolve_training_sample_max() -> int:
-    value = os.getenv("CODE_SEARCH_TRAIN_SAMPLE_MAX", "25000")
-    try:
-        return int(value)
-    except Exception:
+    value = str(os.getenv("CODE_SEARCH_TRAIN_SAMPLE_MAX", "") or "").strip()
+    if value:
+        try:
+            return int(value)
+        except Exception:
+            pass
+
+    total_bytes = get_total_memory_bytes()
+    total_gb = (float(total_bytes) / (1024 ** 3)) if total_bytes > 0 else 0.0
+    if total_gb <= 0:
         return 25000
+    if total_gb <= 16:
+        return 12000
+    if total_gb <= 24:
+        return 18000
+    return 25000

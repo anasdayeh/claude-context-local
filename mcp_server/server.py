@@ -1,12 +1,13 @@
-"""FastMCP server for Codex integration - main entry point."""
-import sys
-import os
-import logging
-import warnings
-from pathlib import Path
-from contextlib import asynccontextmanager
-from concurrent.futures import ThreadPoolExecutor
 import asyncio
+import logging
+import os
+import sys
+import warnings
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastmcp import FastMCP
 
 # Ensure we run inside the project virtualenv when invoked with system python
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -24,11 +25,15 @@ os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 os.environ.setdefault("PYTHONWARNINGS", "ignore")
 os.environ.setdefault("TQDM_DISABLE", "1")
+os.environ.setdefault("CODE_SEARCH_IMPORT_STRATEGY", "embedder_first")
+os.environ.setdefault("CODE_SEARCH_RUNTIME_SELFTEST", "1")
+os.environ.setdefault("CODE_SEARCH_SEARCH_DISABLE_SEMANTIC_ON_EMBEDDER_FAILURE", "1")
 
 warnings.filterwarnings("ignore")
 log_level = os.getenv("CODE_SEARCH_LOG_LEVEL", "WARNING").upper()
 if log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
     log_level = "WARNING"
+os.environ.setdefault("FASTMCP_LOG_LEVEL", log_level)
 
 log_file = os.getenv("CODE_SEARCH_LOG_FILE")
 handlers = None
@@ -54,8 +59,6 @@ logging.getLogger("fastmcp").setLevel(getattr(logging, log_level))
 # Add the parent directory to the path so we can import our modules
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from mcp.server.fastmcp import FastMCP
-
 from mcp_server.code_search_server import CodeSearchServer
 from mcp_server.mcp_tools import register_tools
 from mcp_server.strings_loader import load_strings
@@ -75,7 +78,7 @@ async def _lifespan(app: FastMCP):
         pass
 
 
-mcp = FastMCP("Code Search", log_level=log_level, lifespan=_lifespan)
+mcp = FastMCP("Code Search", lifespan=_lifespan)
 server = CodeSearchServer()
 strings = load_strings()
 register_tools(mcp, server, strings, _EXECUTOR)
@@ -118,9 +121,9 @@ def main():
             logger.warning("Server is binding to 0.0.0.0. Ensure network access is protected.")
             
         logger.info(f"Starting HTTP server on {args.host}:{args.port} ({transport})")
-        mcp.run(transport=transport, host=args.host, port=args.port)
+        mcp.run(transport=transport, host=args.host, port=args.port, show_banner=False)
     else:
-        mcp.run(transport=transport)
+        mcp.run(transport=transport, show_banner=False)
 
 
 if __name__ == "__main__":

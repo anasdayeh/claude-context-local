@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from chunking.code_chunk import CodeChunk
+from chunking.document_extractors import DocxDocumentExtractor, PdfDocumentExtractor
 from chunking.tree_sitter import TreeSitterChunker, TreeSitterChunk
 from chunking.text_chunker import TextChunker
 from chunking.languages import LANGUAGE_MAP
@@ -21,8 +22,9 @@ class MultiLanguageChunker:
         '.txt', '.csv', '.tsv', '.xml', '.svg',
         '.graphql', '.gql', '.sql'
     }
+    DOCUMENT_EXTENSIONS = {'.pdf', '.docx'}
 
-    SUPPORTED_EXTENSIONS = set(LANGUAGE_MAP.keys()) | TEXT_FALLBACK_EXTENSIONS
+    SUPPORTED_EXTENSIONS = set(LANGUAGE_MAP.keys()) | TEXT_FALLBACK_EXTENSIONS | DOCUMENT_EXTENSIONS
     
     # Common large/build/tooling directories to skip during traversal
     DEFAULT_IGNORED_DIRS = {
@@ -49,6 +51,8 @@ class MultiLanguageChunker:
         # Use tree-sitter for other languages
         self.tree_sitter_chunker = TreeSitterChunker()
         self.text_chunker = TextChunker(root_path=root_path)
+        self.pdf_extractor = PdfDocumentExtractor()
+        self.docx_extractor = DocxDocumentExtractor()
     
     def is_supported(self, file_path: str) -> bool:
         """Check if file type is supported.
@@ -77,6 +81,9 @@ class MultiLanguageChunker:
 
         suffix = Path(file_path).suffix.lower()
 
+        if suffix in self.DOCUMENT_EXTENSIONS:
+            return self._chunk_document(file_path, suffix)
+
         # Use tree-sitter for all  languages 
         try:
             tree_chunks = self.tree_sitter_chunker.chunk_file(file_path)
@@ -95,6 +102,23 @@ class MultiLanguageChunker:
         except Exception as e:
             logger.error(f"Failed to chunk file {file_path}: {e}")
             return []
+
+    def _chunk_document(self, file_path: str, suffix: str) -> List[CodeChunk]:
+        extractor = self.pdf_extractor if suffix == ".pdf" else self.docx_extractor
+        blocks = extractor.extract(file_path)
+        chunks: List[CodeChunk] = []
+        for block in blocks:
+            chunks.extend(
+                self.text_chunker.chunk_text(
+                    block.content,
+                    file_path,
+                    chunk_type=block.block_kind,
+                    name=block.name,
+                    tags=block.tags,
+                    extra_metadata=block.extra_metadata,
+                )
+            )
+        return chunks
     
     def _convert_tree_chunks(self, tree_chunks: List[TreeSitterChunk], file_path: str) -> List[CodeChunk]:
         """Convert tree-sitter chunks to CodeChunk format.
