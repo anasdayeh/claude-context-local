@@ -7,12 +7,16 @@ due to how SWIG generates type information. See:
 https://github.com/tree-sitter/py-tree-sitter/issues/
 """
 
+import os
 import pytest
 import sys
 import tempfile
 import shutil
 from pathlib import Path
 from typing import Generator, Dict
+
+# Prevent SIGABRT from duplicate libomp on macOS (torch + numpy both link it).
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 import numpy as np
 
 # Add the package to Python path for testing
@@ -112,27 +116,29 @@ def pytest_configure(config):
     # Patch AVAILABLE_MODELS with mock for integration tests
     try:
         from embeddings import embedding_models_register
-        embedding_models_register.AVAILIABLE_MODELS["google/embeddinggemma-300m"] = EmbeddingModelMock
+        embedding_models_register.AVAILABLE_MODELS["google/embeddinggemma-300m"] = EmbeddingModelMock
     except ImportError:
         pass
+
+def pytest_sessionfinish(session, exitstatus):
+    """Force-exit to avoid hangs from sentence-transformers/torch atexit handlers."""
+    # Let pytest write its summary, then force-exit to avoid atexit hangs.
+    # The terminal reporter flushes in pytest_terminal_summary which runs
+    # before this hook.
+    import sys, atexit
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # Unregister all atexit handlers to prevent hang, then exit normally.
+    atexit._clear()
+    # Fallback: if normal exit still blocks, force it.
+    import threading
+    threading.Timer(2.0, lambda: os._exit(exitstatus)).start()
+
 
 @pytest.fixture(autouse=True)
 def reset_global_state():
     """Reset global state before each test."""
-    # Reset MCP server global state
-    try:
-        import mcp_server.server as server_module
-        server_module._embedder = None
-        server_module._index_manager = None
-        server_module._searcher = None
-        server_module._storage_dir = None
-    except ImportError:
-        pass  # Module might not be available in some tests
-
     yield
-
-    # Cleanup after test if needed
-    pass
 
 
 # Test fixtures

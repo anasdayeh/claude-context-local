@@ -181,3 +181,39 @@ class TestMultiLanguageChunker:
         
         assert any(name in chunk_names for name in ["Calculator", "calculate_sum", "MathOperations", "Operation", "Point"])
         assert any(t in chunk_types for t in ["function", "struct", "trait", "enum", "impl", "macro"])
+
+
+class TestLanguageDefinitionSync:
+    """Verify that language definitions across modules stay in sync."""
+
+    def test_language_map_covers_available_languages(self):
+        """All languages in available_languages.py must appear in LANGUAGE_MAP."""
+        from chunking.languages import LANGUAGE_MAP
+        language_map_names = {name for name, _ in LANGUAGE_MAP.values()}
+        # The hardcoded list in available_languages.py (used for tree-sitter init)
+        expected = {
+            "python", "javascript", "typescript", "tsx", "svelte",
+            "go", "rust", "java", "c", "cpp", "csharp",
+            "markdown", "html", "css", "json", "astro",
+            "yaml", "toml", "xml", "graphql",
+        }
+        missing_from_map = expected - language_map_names
+        assert not missing_from_map, (
+            f"Languages in available_languages.py but not in LANGUAGE_MAP: {missing_from_map}"
+        )
+
+    def test_language_map_languages_in_available_list(self):
+        """LANGUAGE_MAP languages should be covered by available_languages.py init."""
+        from chunking.languages import LANGUAGE_MAP
+        language_map_names = {name for name, _ in LANGUAGE_MAP.values()}
+        # jsx is aliased from javascript, so it's implicitly covered
+        covered = {
+            "python", "javascript", "jsx", "typescript", "tsx", "svelte",
+            "go", "rust", "java", "c", "cpp", "csharp",
+            "markdown", "html", "css", "json", "astro",
+            "yaml", "toml", "xml", "graphql",
+        }
+        missing = language_map_names - covered
+        assert not missing, (
+            f"Languages in LANGUAGE_MAP but not in available_languages.py: {missing}"
+        )

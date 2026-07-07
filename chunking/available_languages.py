@@ -14,9 +14,12 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-def get_availiable_language():
+def get_available_language():
     """
     Return a map {language: language_obj}
+
+    NOTE: The language list below must stay in sync with LANGUAGE_MAP
+    in chunking/languages/__init__.py. A unit test enforces this.
     """
     # Try to import language bindings
     res = {}

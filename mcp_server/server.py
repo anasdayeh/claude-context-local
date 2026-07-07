@@ -9,9 +9,9 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
-# Ensure we run inside the project virtualenv when invoked with system python
+# Ensure we run inside the project virtualenv when invoked as a script
 PROJECT_ROOT = Path(__file__).parent.parent
-if sys.prefix == getattr(sys, "base_prefix", sys.prefix):
+if __name__ == "__main__" and sys.prefix == getattr(sys, "base_prefix", sys.prefix):
     venv_python = PROJECT_ROOT / ".venv" / "bin" / "python"
     if venv_python.exists():
         os.execv(str(venv_python), [str(venv_python)] + sys.argv)

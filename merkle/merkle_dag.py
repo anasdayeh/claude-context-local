@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
+from common_utils import get_ignore_patterns
+
 
 @dataclass
 class MerkleNode:
@@ -53,26 +55,7 @@ class MerkleDAG:
         self.root_path = Path(root_path).resolve()
         self.nodes: Dict[str, MerkleNode] = {}
         self.root_node: Optional[MerkleNode] = None
-        self.ignore_patterns: Set[str] = {
-            '__pycache__', '.git', '.hg', '.svn',
-            '.venv', 'venv', 'env', '.env', '.direnv',
-            'node_modules', '.pnpm-store', '.yarn',
-            '.pytest_cache', '.mypy_cache', '.ruff_cache', '.pytype', '.ipynb_checkpoints',
-            'build', 'dist', 'out', 'public',
-            '.next', '.nuxt', '.svelte-kit', '.angular', '.astro', '.vite',
-            '.cache', '.parcel-cache', '.turbo',
-            'coverage', '.coverage', '.nyc_output',
-            '.gradle', '.idea', '.vscode', '.docusaurus', '.vercel', '.serverless', '.terraform', '.mvn', '.tox',
-            'target', 'bin', 'obj',
-            '*.pyc', '*.pyo', '.DS_Store', 'Thumbs.db'
-        }
-
-        extra_ignores = os.getenv("CODE_SEARCH_IGNORE_DIRS", "")
-        if extra_ignores:
-            for item in extra_ignores.split(","):
-                value = item.strip()
-                if value:
-                    self.ignore_patterns.add(value)
+        self.ignore_patterns: Set[str] = get_ignore_patterns()
     
     def should_ignore(self, path: Path) -> bool:
         """Check if a path should be ignored.

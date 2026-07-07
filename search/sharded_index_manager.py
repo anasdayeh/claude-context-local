@@ -242,6 +242,21 @@ class ShardedIndexManager:
             results = results[:k]
         return results
 
+    def fts_search(self, query: str, k: int = 5) -> List[Tuple[str, float]]:
+        """Search FTS tables across all shards and merge the best ranked hits."""
+        if not query:
+            return []
+
+        hits: List[Tuple[str, float]] = []
+        for shard in self._manifest.shards:
+            manager = self._get_manager(shard["id"], enforce_budget=False)
+            hits.extend(manager.fts_search(query, k=k))
+
+        # SQLite FTS5 bm25 scores are ordered ascending within each shard.
+        # Re-sort after merging so FTS-only search keeps that global ordering.
+        hits.sort(key=lambda item: item[1])
+        return hits[:k]
+
     def fts_ready(self) -> bool:
         for shard in self._manifest.shards:
             manager = self._get_manager(shard["id"], enforce_budget=False)

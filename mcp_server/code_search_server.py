@@ -1,11 +1,13 @@
 """Core logic for code search and indexing server."""
 
+import atexit
 import os
 import logging
 import json
 import hashlib
 import time
 import threading
+import shutil
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -21,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 class CodeSearchServer:
     """Main server class managing indexing and search operations."""
+
+    _DEFAULT_MIN_FREE_DISK_GB = 5.0
 
     def __init__(self):
         applied_defaults = apply_adaptive_runtime_defaults()
@@ -51,8 +55,47 @@ class CodeSearchServer:
         self._jobs = IndexJobManager(
             event_buffer_size=int(os.getenv("CODE_SEARCH_JOB_EVENT_BUFFER", "200") or 200)
         )
+        atexit.register(self.shutdown)
         if self.runtime_selftest_enabled:
             self._run_runtime_selftest()
+
+    def _min_free_disk_gb(self) -> float:
+        raw = str(os.getenv("CODE_SEARCH_MIN_FREE_DISK_GB", "") or "").strip()
+        if raw:
+            try:
+                value = float(raw)
+                if value > 0:
+                    return value
+            except Exception:
+                pass
+        return self._DEFAULT_MIN_FREE_DISK_GB
+
+    def _check_indexing_disk_space(self) -> Optional[str]:
+        """Refuse indexing when the storage volume is below the safety floor."""
+        min_free_gb = self._min_free_disk_gb()
+        try:
+            usage = shutil.disk_usage(str(self.storage_root))
+        except Exception as exc:
+            logger.warning("Could not determine disk space for %s: %s", self.storage_root, exc)
+            return None
+
+        free_gb = usage.free / (1024 ** 3)
+        if free_gb < min_free_gb:
+            message = (
+                f"Insufficient disk space for indexing: {free_gb:.2f} GB free at "
+                f"{self.storage_root} (minimum {min_free_gb:.2f} GB)"
+            )
+            logger.error(message)
+            return message
+
+        return None
+
+    def shutdown(self) -> None:
+        """Shut down background resources (thread pool, etc.)."""
+        try:
+            self._job_executor.shutdown(wait=False)
+        except Exception:
+            pass
 
     def get_project_storage_dir(self, directory_path: str) -> Path:
         """Get unique storage directory for a project path."""
@@ -174,7 +217,11 @@ class CodeSearchServer:
         cancel_event=None,
         auto_switch: bool = True,
     ) -> dict:
-        """Index a directory synchronously (implementation shared by tools/jobs)."""
+        """Index a directory synchronously (implementation shared by tools/jobs).
+
+        Callers (index_directory, start_index_job) must check disk space
+        before invoking this method.
+        """
         try:
             from search.incremental_indexer import IncrementalIndexer
             
@@ -244,6 +291,10 @@ class CodeSearchServer:
         progress_callback=None,
     ) -> dict:
         """Implementation of index_directory tool (synchronous)."""
+        disk_error = self._check_indexing_disk_space()
+        if disk_error:
+            return {"success": False, "error": disk_error}
+
         with self._indexing_lock:
             return self._index_directory_impl(
                 directory_path=directory_path,
@@ -269,6 +320,10 @@ class CodeSearchServer:
         existing = self._jobs.find_active_job_for_path(resolved_path)
         if existing is not None:
             return {"success": True, "job": existing.to_dict(), "deduped": True}
+
+        disk_error = self._check_indexing_disk_space()
+        if disk_error:
+            return {"success": False, "error": disk_error}
 
         job = self._jobs.create_job(
             project_path=resolved_path,
@@ -355,10 +410,16 @@ class CodeSearchServer:
         include_context: bool = True,
         auto_reindex: bool = False,
         max_age_minutes: float = 5,
-        project_path: str = None, # Added to support both tool styles
-        as_dict: bool = True,
-    ) -> List[Dict[str, Any]]:
-        """Implementation of search_code tool."""
+        project_path: str = None,
+    ) -> Dict[str, Any]:
+        """Implementation of search_code tool.
+
+        Returns a dict with at least ``results`` (list) on success, or
+        ``error`` (str) on failure.
+        """
+        def _error(msg: str, **extra: Any) -> Dict[str, Any]:
+            return {"error": msg, "results": [], **extra}
+
         # Determine which project to use, with clear priority:
         # 1. Explicit project_path parameter
         # 2. Currently cached project (self._current_project)
@@ -367,21 +428,17 @@ class CodeSearchServer:
 
         # If we have a target project but searcher is not loaded (or stale),
         # explicitly switch to ensure state is properly initialized.
-        # This handles the case where get_index_status() was called but didn't load searcher.
         if target_project and not self._searcher:
             switch_res = self.switch_project(target_project)
             if "error" in switch_res:
-                # Explicit project_path failed - return error
                 if project_path:
-                    return switch_res if as_dict else [switch_res]
-                # Cached project failed - clear it and try auto-discovery
+                    return _error(switch_res["error"])
                 self._current_project = None
                 target_project = None
         elif project_path and project_path != self._current_project:
-            # Explicit project_path differs from current - switch to it
             switch_res = self.switch_project(project_path)
             if "error" in switch_res:
-                return switch_res if as_dict else [switch_res]
+                return _error(switch_res["error"])
 
         # If still no searcher, try auto-discovery of any indexed project
         if not self._searcher:
@@ -389,7 +446,6 @@ class CodeSearchServer:
             if isinstance(projects, dict):
                 projects = projects.get("projects", [])
             if projects:
-                # Try each project until one successfully loads
                 for proj in projects:
                     proj_path = proj.get("project_path")
                     if proj_path and proj_path != "unknown":
@@ -397,16 +453,14 @@ class CodeSearchServer:
                         if "error" not in switch_res and self._searcher:
                             break
 
-        # Final check - if still no searcher, we truly have no usable project
         if not self._searcher:
-            return {"error": "No project selected. Provide project_path or run index_directory first."}
+            return _error("No project selected. Provide project_path or run index_directory first.")
 
         try:
             embedder_status = self.get_embedder_status()
-            # Respect both tool parameter and env var for backward compatibility/global override
             env_include_context = os.getenv("CODE_SEARCH_INCLUDE_CONTEXT", "").lower() in {"1", "true", "yes"}
             context_depth = 1 if (include_context or env_include_context) else 0
-            
+
             filters = {}
             if file_patterns is None and file_pattern:
                 file_patterns = [file_pattern]
@@ -422,21 +476,20 @@ class CodeSearchServer:
                 and search_mode == "semantic"
             ):
                 return self._semantic_unavailable_response(fallback_mode="none")
-                
+
             results = self._searcher.search(
-                query, 
-                k=k, 
-                filters=filters, 
+                query,
+                k=k,
+                filters=filters,
                 context_depth=context_depth,
                 search_mode=search_mode
             )
-            
-            # Map search results to the format expected by the MCP tool
+
             tool_results = [res.to_search_tool_dict() for res in results]
-            response = {"results": tool_results}
+            response: Dict[str, Any] = {"results": tool_results}
             if isinstance(self._searcher, IntelligentSearcher):
                 mode_used = getattr(self._searcher, "last_search_mode_used", None)
-                if mode_used == "fts":
+                if mode_used == "fts" and search_mode != "fts":
                     response.update(
                         {
                             "semantic_available": False,
@@ -445,9 +498,7 @@ class CodeSearchServer:
                             "error": self.get_embedder_status().get("error"),
                         }
                     )
-            if as_dict:
-                return response
-            return tool_results
+            return response
         except Exception as e:
             self._refresh_embedder_status()
             logger.error(f"Search failed: {e}")
@@ -456,7 +507,7 @@ class CodeSearchServer:
                     error=str(e),
                     fallback_mode="none",
                 )
-            return {"error": str(e)}
+            return _error(str(e))
 
     def find_similar_code(self, chunk_id: str, k: int = 5) -> List[Dict[str, Any]]:
         """Find chunks functionally similar to a given chunk."""
@@ -533,6 +584,7 @@ class CodeSearchServer:
             return {"repaired": False, "reason": "no_manifest_or_shards"}
 
         if has_shards:
+            from search.sharded_index_manager import ShardedIndexManager
             manager = ShardedIndexManager(str(index_dir))
             return manager.repair_manifest_from_shards()
 
@@ -661,6 +713,7 @@ class CodeSearchServer:
             "error_code": "embedder_init_failed",
             "semantic_available": False,
             "fallback_mode": fallback_mode,
+            "results": [],
         }
 
     def clear_index(self, project_path: str = None) -> Dict[str, Any]:

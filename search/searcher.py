@@ -28,6 +28,8 @@ class SearchResult:
     docstring: Optional[str]
     tags: List[str]
     context_info: Dict[str, Any]
+    content: str = ""
+    query: Optional[str] = None
 
     def to_search_tool_dict(self) -> Dict[str, Any]:
         """Serialize for the search_code MCP tool."""
@@ -42,9 +44,21 @@ class SearchResult:
         }
         if self.name:
             item["name"] = self.name
-        snippet = self._make_snippet(self.content_preview)
+        if self.parent_name:
+            item["parent_name"] = self.parent_name
+        if self.docstring:
+            item["docstring"] = self._truncate_text(self.docstring, 400)
+        if self.tags:
+            item["tags"] = self.tags
+        snippet = self._make_snippet(self.content or self.content_preview, self.query)
         if snippet:
             item["snippet"] = snippet
+        preview = self._make_content_preview(self.content or self.content_preview)
+        if preview:
+            item["content_preview"] = preview
+        context = self._make_context_payload()
+        if context:
+            item["context"] = context
         return item
 
     def to_similar_tool_dict(self) -> Dict[str, Any]:
@@ -61,16 +75,109 @@ class SearchResult:
             "tags": self.tags,
         }
 
-    @staticmethod
-    def _make_snippet(preview: Optional[str]) -> str:
-        if not preview:
+    @classmethod
+    def _make_snippet(cls, content: Optional[str], query: Optional[str] = None) -> str:
+        if not content:
             return ""
-        for line in preview.split("\n"):
-            s = line.strip()
-            if s:
-                snippet = " ".join(s.split())
-                return (snippet[:157] + "...") if len(snippet) > 160 else snippet
-        return ""
+        lines = content.splitlines()
+        non_empty_indexes = [idx for idx, line in enumerate(lines) if line.strip()]
+        if not non_empty_indexes:
+            return ""
+
+        tokens = cls._query_tokens(query or "")
+        match_idx = None
+        if tokens:
+            for idx in non_empty_indexes:
+                haystack = cls._normalize_for_match(lines[idx])
+                if any(token in haystack for token in tokens):
+                    match_idx = idx
+                    break
+
+        if match_idx is None:
+            match_idx = non_empty_indexes[0]
+
+        start = max(0, match_idx - 2)
+        end = min(len(lines), match_idx + 7)
+        selected = lines[start:end]
+        while selected and not selected[0].strip():
+            selected.pop(0)
+        while selected and not selected[-1].strip():
+            selected.pop()
+
+        snippet = "\n".join(selected).strip("\n")
+        return cls._truncate_text(snippet, cls._result_char_limit("CODE_SEARCH_RESULT_SNIPPET_CHARS", 900))
+
+    @classmethod
+    def _make_content_preview(cls, content: Optional[str]) -> str:
+        if not content:
+            return ""
+        return cls._truncate_text(
+            content.strip("\n"),
+            cls._result_char_limit("CODE_SEARCH_RESULT_CONTENT_CHARS", 1400),
+        )
+
+    def _make_context_payload(self) -> Dict[str, Any]:
+        if not self.context_info:
+            return {}
+
+        payload: Dict[str, Any] = {}
+        file_context = self.context_info.get("file_context")
+        if isinstance(file_context, dict) and file_context:
+            payload["file_context"] = file_context
+
+        neighbors = self.context_info.get("file_neighbors")
+        if isinstance(neighbors, list) and neighbors:
+            payload["file_neighbors"] = []
+            for neighbor in neighbors[:4]:
+                if not isinstance(neighbor, dict):
+                    continue
+                item = {
+                    "chunk_id": neighbor.get("chunk_id"),
+                    "lines": neighbor.get("lines"),
+                    "kind": neighbor.get("chunk_type"),
+                    "name": neighbor.get("name"),
+                }
+                preview = self._make_content_preview(neighbor.get("preview") or "")
+                if preview:
+                    item["preview"] = preview
+                payload["file_neighbors"].append({k: v for k, v in item.items() if v})
+            if not payload["file_neighbors"]:
+                payload.pop("file_neighbors", None)
+        return payload
+
+    @staticmethod
+    def _result_char_limit(env_name: str, default: int) -> int:
+        raw = str(os.getenv(env_name, str(default)) or str(default)).strip()
+        try:
+            return max(160, int(raw))
+        except Exception:
+            return default
+
+    @staticmethod
+    def _truncate_text(text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        return text[: max(0, limit - 3)].rstrip() + "..."
+
+    @staticmethod
+    def _query_tokens(query: str) -> List[str]:
+        stopwords = {
+            "a", "an", "and", "are", "as", "at", "be", "by", "code", "does",
+            "for", "from", "how", "in", "is", "it", "of", "on", "or", "the",
+            "to", "where", "with",
+        }
+        normalized = SearchResult._normalize_for_match(query)
+        tokens = []
+        for token in re.findall(r"[a-z0-9_]+", normalized):
+            if len(token) < 2 or token in stopwords:
+                continue
+            tokens.append(token)
+        return tokens[:12]
+
+    @staticmethod
+    def _normalize_for_match(value: str) -> str:
+        value = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", value)
+        return value.replace("-", "_").lower()
 
 
 class IntelligentSearcher:
@@ -227,7 +334,7 @@ class IntelligentSearcher:
         search_results = []
         for chunk_id, similarity, metadata in raw_results:
             result = self._create_search_result(
-                chunk_id, similarity, metadata, context_depth, context_cache
+                chunk_id, similarity, metadata, context_depth, context_cache, query
             )
             search_results.append(result)
         
@@ -311,7 +418,7 @@ class IntelligentSearcher:
         search_results = []
         for chunk_id, similarity, metadata in raw_results:
             result = self._create_search_result(
-                chunk_id, similarity, metadata, context_depth, context_cache
+                chunk_id, similarity, metadata, context_depth, context_cache, query
             )
             search_results.append(result)
 
@@ -354,7 +461,7 @@ class IntelligentSearcher:
         for chunk_id, similarity, metadata in raw_results[:k]:
             search_results.append(
                 self._create_search_result(
-                    chunk_id, similarity, metadata, context_depth, context_cache
+                    chunk_id, similarity, metadata, context_depth, context_cache, query
                 )
             )
         return search_results[:k]
@@ -395,11 +502,13 @@ class IntelligentSearcher:
         metadata: Dict[str, Any],
         context_depth: int,
         file_context_cache: Optional[Dict[str, List[Tuple[str, Dict[str, Any]]]]] = None,
+        query: Optional[str] = None,
     ) -> SearchResult:
         """Create a rich search result with context information."""
         
         # Basic metadata extraction
         content_preview = metadata.get('content_preview', '')
+        content = metadata.get('content') or content_preview
         file_path = metadata.get('file_path', '')
         relative_path = metadata.get('relative_path', '')
         folder_structure = metadata.get('folder_structure', [])
@@ -448,7 +557,9 @@ class IntelligentSearcher:
             end_line=metadata.get('end_line', 0),
             docstring=metadata.get('docstring'),
             tags=metadata.get('tags', []),
-            context_info=context_info
+            context_info=context_info,
+            content=content,
+            query=query,
         )
 
     def _iter_all_chunks(self):

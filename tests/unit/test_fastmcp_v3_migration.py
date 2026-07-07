@@ -14,7 +14,6 @@ def test_production_code_no_longer_uses_legacy_fastmcp_import_path():
     production_files = [
         ROOT / "mcp_server" / "server.py",
         ROOT / "mcp_server" / "mcp_tools.py",
-        ROOT / "mcp_server" / "code_search_mcp.py",
     ]
 
     for path in production_files:
@@ -23,7 +22,7 @@ def test_production_code_no_longer_uses_legacy_fastmcp_import_path():
         assert "import mcp.server.fastmcp" not in content, path.name
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_send_progress_prefers_context_report_progress():
     calls: list[dict] = []
 

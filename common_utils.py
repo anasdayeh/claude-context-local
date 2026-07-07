@@ -3,7 +3,42 @@ import platform
 import subprocess
 from pathlib import Path
 from functools import lru_cache
-from typing import Dict, MutableMapping, Optional
+from typing import Dict, FrozenSet, MutableMapping, Optional, Set
+
+# ── Shared ignore patterns ──────────────────────────────────────────────────
+
+# Directory names to skip during indexing and change tracking.
+DEFAULT_IGNORED_DIRS: FrozenSet[str] = frozenset({
+    '__pycache__', '.git', '.hg', '.svn',
+    '.venv', 'venv', 'env', '.env', '.direnv',
+    'node_modules', '.pnpm-store', '.yarn',
+    '.pytest_cache', '.mypy_cache', '.ruff_cache', '.pytype', '.ipynb_checkpoints',
+    'build', 'dist', 'out', 'public',
+    '.next', '.nuxt', '.svelte-kit', '.angular', '.astro', '.vite',
+    '.cache', '.parcel-cache', '.turbo',
+    'coverage', '.coverage', '.nyc_output',
+    '.gradle', '.idea', '.vscode', '.docusaurus', '.vercel', '.serverless', '.terraform', '.mvn', '.tox',
+    'target', 'bin', 'obj',
+})
+
+# File-level patterns to ignore (glob-style, used by merkle change tracking).
+DEFAULT_IGNORED_FILE_PATTERNS: FrozenSet[str] = frozenset({
+    '*.pyc', '*.pyo', '.DS_Store', 'Thumbs.db',
+})
+
+
+def get_ignore_patterns() -> Set[str]:
+    """Return combined ignore patterns (dirs + file globs + env var overrides)."""
+    patterns: Set[str] = set(DEFAULT_IGNORED_DIRS) | set(DEFAULT_IGNORED_FILE_PATTERNS)
+    extra = os.getenv("CODE_SEARCH_IGNORE_DIRS", "")
+    if extra:
+        for item in extra.split(","):
+            value = item.strip()
+            if value:
+                patterns.add(value)
+    return patterns
+
+# ── Memory utilities ────────────────────────────────────────────────────────
 
 def get_available_memory_bytes() -> int:
     """Return available memory in bytes when possible."""

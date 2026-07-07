@@ -122,7 +122,6 @@ def main() -> None:
     # Imports after path setup
     try:
         from mcp_server.code_search_server import CodeSearchServer
-        from embeddings.embedding_models_register import AVAILIABLE_MODELS
     except ImportError as e:
         logger.error(f"Import failed: {e}")
         sys.exit(1)

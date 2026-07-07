@@ -494,7 +494,6 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
             auto_reindex,
             max_age_minutes,
             project_path,
-            True,
         )
         coerced = _coerce_result(result)
         if not isinstance(coerced, dict):
@@ -590,6 +589,9 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
                 "filters_applied": filters_applied,
                 "project_path_used": after_project,
                 "index_id": index_id,
+                "index_project_name": stats.get("project_name"),
+                "index_status": stats.get("status"),
+                "index_files_indexed": stats.get("files_indexed"),
                 "index_last_indexed": index_last_indexed,
                 "index_last_indexed_source": index_last_indexed_source,
                 "manifest_version": manifest_version,

@@ -72,7 +72,7 @@ def _apply_test_mocks_if_requested() -> None:
 
     from embeddings import embedding_models_register
 
-    embedding_models_register.AVAILIABLE_MODELS["google/embeddinggemma-300m"] = EmbeddingModelMock
+    embedding_models_register.AVAILABLE_MODELS["google/embeddinggemma-300m"] = EmbeddingModelMock
 
 
 def _iter_supported_files(repo_path: Path, chunker: MultiLanguageChunker) -> Iterable[Path]:

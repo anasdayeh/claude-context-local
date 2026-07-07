@@ -1,5 +1,41 @@
 # Changelog
 
+## 2026-04-16
+
+### Fixed
+- Fixed `NameError` in `CodeSearchServer.repair_index()`: `ShardedIndexManager` was used without a local import (would crash at runtime when repairing sharded indexes).
+- Fixed `ThreadPoolExecutor` in `CodeSearchServer` never being shut down: added `shutdown()` method and `atexit.register()` to prevent process hangs.
+- Fixed macOS libomp SIGABRT on test import: `conftest.py` now sets `KMP_DUPLICATE_LIB_OK=TRUE` early.
+- Fixed test suite hanging indefinitely: `server.py` `os.execv` now guarded by `__name__ == "__main__"` (was firing on import, spawning nested pytest); `conftest.py` clears atexit handlers from sentence-transformers/torch.
+- Fixed `search_code()` return type inconsistency: removed `as_dict` parameter; all paths now return `Dict[str, Any]` with a `results` key. Error responses include `results: []`.
+- Fixed double disk-space check: removed redundant check from `_index_directory_impl` (callers already check before lock/job creation).
+- Fixed async test markers: switched `@pytest.mark.asyncio` → `@pytest.mark.anyio` in 4 test files (pytest-asyncio not available in system Python).
+- Fixed `test_mcp_tool_descriptions.py`: adapted to FastMCP API change (`list_tools()` → `_tool_manager._tools`).
+- Added `-p no:xonsh` to `pytest.ini` to prevent xonsh plugin interference.
+- Removed stale `reset_global_state` fixture that referenced nonexistent `server_module._embedder` attributes.
+
+### Added
+- Disk-space safety guard (`_check_indexing_disk_space`) on all indexing entry points; configurable via `CODE_SEARCH_MIN_FREE_DISK_GB` env var (default: 5 GB).
+- New unit tests for disk-space refusal in both synchronous and background indexing paths.
+
+## 2026-04-09
+
+### Removed
+- Deleted `mcp_server/code_search_server.py.bak` (dead backup, 149 lines, no references).
+- Deleted `scripts/index_codebase.py` (legacy standalone indexer, superseded by `scripts/index_repo.py`).
+- Deleted `embeddings/gemma.py` (`GemmaEmbeddingModel` was a trivial subclass); replaced with factory function in `embedding_models_register.py`.
+- Deleted `mcp_server/code_search_mcp.py` (legacy test wrapper); refactored `tests/unit/test_mcp_tool_descriptions.py` to use the production `FastMCP` + `register_tools()` path.
+
+### Fixed
+- Fixed `AVAILIABLE_MODELS` → `AVAILABLE_MODELS` typo propagated across 5 files (10 sites).
+- Fixed `get_availiable_language` → `get_available_language` typo in 2 files (3 sites).
+
+### Refactored
+- Eliminated `TextChunk` intermediate dataclass in `chunking/text_chunker.py`; `CodeChunk` is now constructed directly in a single pass.
+- Unified duplicate ignore-directory lists: `DEFAULT_IGNORED_DIRS` and `get_ignore_patterns()` now live in `common_utils.py` as the single source of truth, imported by both `chunking/multi_language_chunker.py` and `merkle/merkle_dag.py`. `CODE_SEARCH_IGNORE_DIRS` env var now applies to both chunking and merkle.
+- Added `TestLanguageDefinitionSync` tests to verify `available_languages.py` and `LANGUAGE_MAP` stay in sync.
+- Removed orphaned `# fallback logic improved` comment from `multi_language_chunker.py`.
+
 ## 2025-12-19
 - Added ONNX backend support with optional int8 quantization for embeddings, plus prompt registry validation and safe float32 outputs.
 - Switched FAISS indexing to ID-mapped vectors with real deletions and SQLite-backed ID mapping; removed pickle usage.

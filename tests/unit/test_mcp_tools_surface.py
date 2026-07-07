@@ -102,7 +102,7 @@ class DummyServer:
         return {"status": "ready", "backend": "torch", "error": None}
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_tool_surface_has_no_v2_names():
     mcp = FakeMCP()
     server = DummyServer()
@@ -114,7 +114,7 @@ async def test_tool_surface_has_no_v2_names():
     assert not any(name.endswith("_v2") for name in tool_names)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_list_tools_includes_templates_and_prompts():
     mcp = FakeMCP()
     server = DummyServer()
@@ -136,7 +136,7 @@ async def test_list_tools_includes_templates_and_prompts():
     assert "codesearch://projects/{project_id}" in template_uris
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_list_projects_returns_normalized_shape():
     mcp = FakeMCP()
     server = DummyServer()
@@ -151,7 +151,7 @@ async def test_list_projects_returns_normalized_shape():
     assert isinstance(result.get("result"), list)
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_find_similar_code_returns_normalized_shape():
     mcp = FakeMCP()
     server = DummyServer()

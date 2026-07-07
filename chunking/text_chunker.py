@@ -2,18 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from chunking.code_chunk import CodeChunk
-
-
-@dataclass
-class TextChunk:
-    content: str
-    start_line: int
-    end_line: int
 
 
 class TextChunker:
@@ -54,23 +46,34 @@ class TextChunker:
             return []
 
         lines = content.splitlines()
-        chunks: List[TextChunk] = []
+        folder_parts, relative_path = self._path_metadata(path)
+        final_tags = list(tags or self._default_tags(path))
 
+        code_chunks: List[CodeChunk] = []
         current: List[str] = []
         start_line = 1
         current_len = 0
+        chunk_index = 1
 
         def flush(end_line: int) -> None:
-            nonlocal current, start_line, current_len
+            nonlocal current, start_line, current_len, chunk_index
             if not current:
                 return
-            chunks.append(
-                TextChunk(
+            code_chunks.append(
+                CodeChunk(
+                    file_path=str(path),
+                    relative_path=relative_path,
+                    folder_structure=folder_parts,
+                    chunk_type=chunk_type,
                     content="\n".join(current),
                     start_line=start_line,
                     end_line=end_line,
+                    name=name or f"{path.name}:{chunk_index}",
+                    tags=list(final_tags),
+                    extra_metadata=dict(extra_metadata or {}),
                 )
             )
+            chunk_index += 1
             current = []
             start_line = end_line + 1
             current_len = 0
@@ -88,26 +91,6 @@ class TextChunker:
             current_len += line_len
 
         flush(len(lines))
-
-        folder_parts, relative_path = self._path_metadata(path)
-        final_tags = list(tags or self._default_tags(path))
-
-        code_chunks: List[CodeChunk] = []
-        for i, chunk in enumerate(chunks, start=1):
-            code_chunks.append(
-                CodeChunk(
-                    file_path=str(path),
-                    relative_path=relative_path,
-                    folder_structure=folder_parts,
-                    chunk_type=chunk_type,
-                    content=chunk.content,
-                    start_line=chunk.start_line,
-                    end_line=chunk.end_line,
-                    name=name or f"{path.name}:{i}",
-                    tags=list(final_tags),
-                    extra_metadata=dict(extra_metadata or {}),
-                )
-            )
 
         return code_chunks
 

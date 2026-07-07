@@ -50,7 +50,14 @@ class FakeMCP:
 
 class DummyServer:
     def __init__(self):
-        self.as_dict = None
+        self._current_project = "/tmp/project"
+
+    def current_project_path(self):
+        return self._current_project
+
+    def get_project_storage_dir(self, path):
+        from pathlib import Path
+        return Path("/tmp/storage/abc123")
 
     def search_code(
         self,
@@ -64,9 +71,7 @@ class DummyServer:
         auto_reindex: bool = False,
         max_age_minutes: float = 5,
         project_path: str = None,
-        as_dict: bool = True,
     ):
-        self.as_dict = as_dict
         return {
             "results": [],
             "semantic_available": False,
@@ -82,7 +87,7 @@ class DummyServer:
         }
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_mcp_tool_search_code_returns_dict():
     mcp = FakeMCP()
     server = DummyServer()
@@ -93,12 +98,11 @@ async def test_mcp_tool_search_code_returns_dict():
     search_fn = mcp.tools["search_code"]
     result = await search_fn(query="test")
 
-    assert server.as_dict is True
     assert isinstance(result, dict)
     assert "results" in result
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_search_code_meta_includes_fts_scalars_not_full_payload(monkeypatch):
     """Test that FTS scalar fields are included in meta, but not the full fts_status payload."""
     mcp = FakeMCP()
@@ -143,7 +147,7 @@ async def test_search_code_meta_includes_fts_scalars_not_full_payload(monkeypatc
     assert meta.get("manifest") is None
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_search_code_preserves_structured_embedder_failure_fields():
     mcp = FakeMCP()
     server = DummyServer()

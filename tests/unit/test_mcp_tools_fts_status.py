@@ -62,7 +62,7 @@ class StorageServer:
         raise FileNotFoundError("unknown project")
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_fts_status_reports_coverage(tmp_path):
     project_root = tmp_path / "proj"
     index_dir = project_root / "index"

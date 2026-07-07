@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from chunking.code_chunk import CodeChunk
-from embeddings.embedding_models_register import AVAILIABLE_MODELS
+from embeddings.embedding_models_register import AVAILABLE_MODELS
 from common_utils import get_available_memory_bytes
 
 class EmbeddingResult:
@@ -93,19 +93,19 @@ class CodeEmbedder:
         self._last_error: Optional[str] = None
 
         # Normalize model name if using known aliases
-        if model_name in AVAILIABLE_MODELS:
-            model_class = AVAILIABLE_MODELS[model_name]
+        if model_name in AVAILABLE_MODELS:
+            model_class = AVAILABLE_MODELS[model_name]
         else:
-            model_class = AVAILIABLE_MODELS.get(model_name)
+            model_class = AVAILABLE_MODELS.get(model_name)
             if not model_class:
-                for k, v in AVAILIABLE_MODELS.items():
+                for k, v in AVAILABLE_MODELS.items():
                     if k.endswith(model_name) or model_name.endswith(k):
                         model_class = v
                         model_name = k
                         break
             
             if not model_class:
-                available = sorted(AVAILIABLE_MODELS.keys())
+                available = sorted(AVAILABLE_MODELS.keys())
                 raise ValueError(f"Unknown model '{model_name}'. Available: {available}")
 
         self.model_name = model_name

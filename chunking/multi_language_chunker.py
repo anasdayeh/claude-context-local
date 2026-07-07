@@ -9,6 +9,7 @@ from chunking.document_extractors import DocxDocumentExtractor, PdfDocumentExtra
 from chunking.tree_sitter import TreeSitterChunker, TreeSitterChunk
 from chunking.text_chunker import TextChunker
 from chunking.languages import LANGUAGE_MAP
+from common_utils import DEFAULT_IGNORED_DIRS
 
 logger = logging.getLogger(__name__)
 
@@ -27,18 +28,7 @@ class MultiLanguageChunker:
     SUPPORTED_EXTENSIONS = set(LANGUAGE_MAP.keys()) | TEXT_FALLBACK_EXTENSIONS | DOCUMENT_EXTENSIONS
     
     # Common large/build/tooling directories to skip during traversal
-    DEFAULT_IGNORED_DIRS = {
-        '__pycache__', '.git', '.hg', '.svn',
-        '.venv', 'venv', 'env', '.env', '.direnv',
-        'node_modules', '.pnpm-store', '.yarn',
-        '.pytest_cache', '.mypy_cache', '.ruff_cache', '.pytype', '.ipynb_checkpoints',
-        'build', 'dist', 'out', 'public',
-        '.next', '.nuxt', '.svelte-kit', '.angular', '.astro', '.vite',
-        '.cache', '.parcel-cache', '.turbo',
-        'coverage', '.coverage', '.nyc_output',
-        '.gradle', '.idea', '.vscode', '.docusaurus', '.vercel', '.serverless', '.terraform', '.mvn', '.tox',
-        'target', 'bin', 'obj'
-    }
+    DEFAULT_IGNORED_DIRS = DEFAULT_IGNORED_DIRS
     
     def __init__(self, root_path: Optional[str] = None):
         """Initialize multi-language chunker.
@@ -286,5 +276,3 @@ class MultiLanguageChunker:
         
         logger.info(f"Total chunks from directory: {len(all_chunks)}")
         return all_chunks
-
-# fallback logic improved

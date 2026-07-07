@@ -1,9 +1,11 @@
 """Tests for MCP tool descriptions and their lengths."""
 
-import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
+from fastmcp import FastMCP
 from mcp_server.code_search_server import CodeSearchServer
-from mcp_server.code_search_mcp import CodeSearchMCP
+from mcp_server.mcp_tools import register_tools
+from mcp_server.strings_loader import load_strings
 
 
 class TestMCPToolDescriptions:
@@ -12,9 +14,11 @@ class TestMCPToolDescriptions:
     def setup_method(self):
         """Setup test by getting tools from MCP."""
         server = CodeSearchServer()
-        mcp = CodeSearchMCP(server)
-        tools = asyncio.run(mcp.list_tools())
-        self.tools = {tool.name: tool for tool in tools}
+        mcp = FastMCP("Code Search")
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mcp-test")
+        strings = load_strings()
+        register_tools(mcp, server, strings, executor)
+        self.tools = dict(mcp._tool_manager._tools)
 
     def _assert_description_length(self, tool_name):
         """Get tool description length."""

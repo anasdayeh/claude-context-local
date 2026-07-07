@@ -12,9 +12,9 @@ except ImportError:
     Parser = None
     TREE_SITTER_AVAILABLE = False
 
-from chunking.available_languages import get_availiable_language
+from chunking.available_languages import get_available_language
 # map {language: language_obj}
-AVAILABLE_LANGUAGES = get_availiable_language()
+AVAILABLE_LANGUAGES = get_available_language()
 
 logger = logging.getLogger(__name__)
 
