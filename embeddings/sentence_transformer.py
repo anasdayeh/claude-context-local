@@ -21,12 +21,23 @@ class SentenceTransformerModel(EmbeddingModel):
         device: str = "auto",
         trust_remote_code: bool = False,
         backend: Optional[str] = None,
+        model_kwargs: Optional[Dict[str, Any]] = None,
+        query_instruction: Optional[str] = None,
     ):
-        """Initialize SentenceTransformer model."""
+        """Initialize SentenceTransformer model.
+
+        model_kwargs: extra kwargs forwarded to SentenceTransformer(model_kwargs=...)
+            on every load path (primary + torch fallback) — e.g.
+            attn_implementation="eager" (Qwen macOS SDPA NaN fix) and torch_dtype.
+        query_instruction: if set, prepended to each query text in encode_query
+            (Qwen instruction-aware retrieval); documents are never prefixed.
+        """
         super().__init__(device)
         self.model_name = model_name
         self.cache_dir = cache_dir
         self.trust_remote_code = trust_remote_code
+        self._extra_model_kwargs = dict(model_kwargs or {})
+        self.query_instruction = query_instruction
         self._logger = logging.getLogger(__name__)
         
         # State tracking
@@ -85,8 +96,10 @@ class SentenceTransformerModel(EmbeddingModel):
                 model_source = str(local_path)
         
         backend = self.backend
-        model_kwargs = {}
-        
+        # Seed with per-model kwargs (e.g. attn_implementation="eager", torch_dtype)
+        # so they reach BOTH the primary load below and the torch fallback.
+        model_kwargs = dict(self._extra_model_kwargs)
+
         if backend == "onnx":
             # Configure ONNX kwargs based on env/defaults
             # This matches sbert.net behavior for backend="onnx"
@@ -123,6 +136,7 @@ class SentenceTransformerModel(EmbeddingModel):
                     cache_folder=self.cache_dir,
                     device=self._effective_device_for_backend("torch"),
                     trust_remote_code=self.trust_remote_code,
+                    model_kwargs=model_kwargs if model_kwargs else None,
                 )
             raise
 
@@ -232,6 +246,12 @@ class SentenceTransformerModel(EmbeddingModel):
 
     def encode_query(self, texts: List[str], **kwargs) -> np.ndarray:
         """Encode queries using model-specific method if available."""
+        if self.query_instruction:
+            # Instruction-aware model (e.g. Qwen) with no usable "query" prompt:
+            # prepend the instruction ourselves and encode as plain text, bypassing
+            # encode_query's prompt handling. Documents (encode_document) get nothing.
+            prefixed = [f"{self.query_instruction}{t}" for t in texts]
+            return self.encode(prefixed, **kwargs)
         try:
             m = self.model
             if hasattr(m, "encode_query"):
