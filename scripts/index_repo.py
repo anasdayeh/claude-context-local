@@ -33,7 +33,7 @@ def _setup_logging(verbose: bool, log_file: str | None) -> None:
     )
 
 
-def _parse_args() -> argparse.Namespace:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Index a repo using the MCP pipeline")
     parser.add_argument("path", help="Path to the repository to index")
     parser.add_argument("--project-name", dest="project_name", help="Override project name")
@@ -44,8 +44,16 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--incremental",
+        dest="incremental",
         action="store_true",
-        help="Run incremental indexing (default: full)",
+        default=True,
+        help="Run incremental indexing, diffing against the last snapshot (default)",
+    )
+    parser.add_argument(
+        "--full",
+        dest="incremental",
+        action="store_false",
+        help="Force a full re-index, ignoring any existing snapshot (e.g. after a model change)",
     )
     parser.add_argument(
         "--sharded",
@@ -77,7 +85,11 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Repair a sharded manifest from existing shard folders",
     )
-    return parser.parse_args()
+    return parser
+
+
+def _parse_args() -> argparse.Namespace:
+    return _build_parser().parse_args()
 
 
 def main() -> int:
