@@ -114,16 +114,29 @@ class SnapshotManager:
             with open(snapshot_path, 'r') as f:
                 snapshot_data = json.load(f)
                 
-            # Check version compatibility
+            # Version mismatch → the on-disk format may be incompatible; refuse it
+            # LOUDLY (this forces a full re-index downstream) rather than feeding a
+            # stale/foreign shape into from_dict.
             if snapshot_data.get('version') != '1.0':
-                self._logger.warning(
-                    "Snapshot version mismatch: %s", snapshot_data.get('version')
+                self._logger.error(
+                    "Snapshot version mismatch for %s (found %r, expected '1.0') — "
+                    "will FULL re-index. Delete or migrate this snapshot to restore "
+                    "incremental behavior.",
+                    snapshot_path, snapshot_data.get('version'),
                 )
+                return None
                 
             return MerkleDAG.from_dict(snapshot_data['dag'])
             
-        except (json.JSONDecodeError, KeyError, Exception) as e:
-            self._logger.warning("Error loading snapshot: %s", e)
+        except Exception as e:
+            # Kept broad on purpose: a bad snapshot must never crash indexing — it
+            # should fall back to a full re-index. But it must be VISIBLE (ERROR),
+            # not silently swallowed at WARNING as it was before.
+            self._logger.error(
+                "Snapshot load failed for %s (%s) — will FULL re-index. "
+                "Delete or migrate this snapshot to restore incremental behavior.",
+                snapshot_path, e,
+            )
             return None
     
     def load_metadata(self, project_path: str) -> Optional[Dict]:
