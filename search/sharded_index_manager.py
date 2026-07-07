@@ -27,8 +27,9 @@ def merge_top_k(results: List[List[Tuple[str, float, Dict[str, Any]]]], k: int) 
 class ShardedIndexManager:
     """Manage multiple FAISS shards under a single project."""
 
-    def __init__(self, index_root: str):
+    def __init__(self, index_root: str, embedding_model: str = ""):
         self.index_root = Path(index_root)
+        self._embedding_model = embedding_model or ""
         self.shards_root = self.index_root / "shards"
         self.manifest_path = self.index_root / "manifest.json"
         self.stats_path = self.index_root / "stats.json"
@@ -65,6 +66,7 @@ class ShardedIndexManager:
             index_type="flat",
             shard_count=0,
             shards=[],
+            embedding_model=self._embedding_model,
         )
         manifest.save(self.manifest_path)
         return manifest
@@ -474,6 +476,7 @@ class ShardedIndexManager:
             index_type=index_type,
             shard_count=len(shards),
             shards=shards,
+            embedding_model=self._embedding_model,
         )
         self._manifest.save(self.manifest_path)
         self._active_shard_id = shards[-1]["id"]
@@ -506,6 +509,7 @@ class ShardedIndexManager:
             index_type=self._manifest.index_type,
             shard_count=0,
             shards=[],
+            embedding_model=self._manifest.embedding_model or self._embedding_model,
         )
         self._manifest.save(self.manifest_path)
         # Ensure a fresh active shard exists after a clear to avoid empty manifests.

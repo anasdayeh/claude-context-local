@@ -675,10 +675,23 @@ class CodeSearchServer:
         flag = os.getenv("CODE_SEARCH_SHARDED_INDEX", "").lower()
         if self.import_strategy == "embedder_first":
             self._refresh_embedder_status()
+        embed_model = getattr(self.embedder, "model_name", "") or ""
+        # Guard: refuse to open an existing index that was built by a different
+        # embedding model (cheap name check, no model load). Raises
+        # IndexModelMismatchError with a clear message instead of a raw FAISS crash.
+        # Backstops the primary isolation (a separate CODE_SEARCH_STORAGE per model).
+        if manifest_path.exists():
+            from search.shard_manifest import ShardManifest
+            try:
+                _manifest = ShardManifest.load(manifest_path)
+            except Exception:
+                _manifest = None
+            if _manifest is not None:
+                _manifest.assert_compatible(embed_model, 0)
         from search.indexer import CodeIndexManager
         if flag in {"1", "true", "yes"} or (flag not in {"0", "false", "no"} and manifest_path.exists()):
             from search.sharded_index_manager import ShardedIndexManager
-            return ShardedIndexManager(str(index_dir))
+            return ShardedIndexManager(str(index_dir), embedding_model=embed_model)
         return CodeIndexManager(str(index_dir))
 
     def _maybe_start_model_preload(self) -> None:
