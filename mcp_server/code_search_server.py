@@ -20,6 +20,17 @@ from mcp_server.index_jobs import IndexJobManager
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_EMBED_MODEL = "google/embeddinggemma-300m"
+
+
+def _resolve_embed_model_name() -> str:
+    """Active embedding model, selectable via CODE_SEARCH_EMBED_MODEL (default Gemma).
+
+    Switching models is env-only (no code edit) — pair it with a distinct
+    CODE_SEARCH_STORAGE root so the 768-dim and 2560-dim vector spaces never mix.
+    """
+    return os.getenv("CODE_SEARCH_EMBED_MODEL", "").strip() or _DEFAULT_EMBED_MODEL
+
 
 class CodeSearchServer:
     """Main server class managing indexing and search operations."""
@@ -40,7 +51,11 @@ class CodeSearchServer:
         self.storage_root = get_storage_dir()
         # Default embedder uses local models/ directory if configured in CodeSearchServer init
         device = os.getenv("CODE_SEARCH_DEVICE", "auto")
-        self.embedder = CodeEmbedder(cache_dir=str(self.storage_root / "models"), device=device)
+        self.embedder = CodeEmbedder(
+            model_name=_resolve_embed_model_name(),
+            cache_dir=str(self.storage_root / "models"),
+            device=device,
+        )
         self.chunker = MultiLanguageChunker()
         self._embedder_status: Dict[str, Any] = self.embedder.health_status()
         self._current_project = None
