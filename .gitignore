@@ -218,46 +218,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 .DS_Store
-merkle/
-merkle/1f5c9f39711752315485135358dc99e2_metadata.json
-merkle/1f5c9f39711752315485135358dc99e2_snapshot.json
-merkle/2fc25ac0e3e24c486b02bee05a1faac3_metadata.json
-merkle/2fc25ac0e3e24c486b02bee05a1faac3_snapshot.json
-merkle/04edc9dfba6b3b2c5c5f30749fcd0d35_metadata.json
-merkle/04edc9dfba6b3b2c5c5f30749fcd0d35_snapshot.json
-merkle/5dff53959aeae1b028cec9ddf066e8d8_metadata.json
-merkle/5dff53959aeae1b028cec9ddf066e8d8_snapshot.json
-merkle/6adc23d1bc959f288a663a937c4323d9_metadata.json
-merkle/6adc23d1bc959f288a663a937c4323d9_snapshot.json
-merkle/53cb582db394d8692b657d802389e029_metadata.json
-merkle/53cb582db394d8692b657d802389e029_snapshot.json
-merkle/7723b181d627af874cb60fe2e3c27471_metadata.json
-merkle/7723b181d627af874cb60fe2e3c27471_snapshot.json
-merkle/28045edc7f37b28fdd2b06d0b9b33450_metadata.json
-merkle/28045edc7f37b28fdd2b06d0b9b33450_snapshot.json
-merkle/746826c797d46e836479d227f68c8e65_metadata.json
-merkle/746826c797d46e836479d227f68c8e65_snapshot.json
-merkle/a9a2527a702add6f14014341dca778ae_metadata.json
-merkle/a9a2527a702add6f14014341dca778ae_snapshot.json
-merkle/ac2b1e579663ba7a47a6a3da0df65dde_metadata.json
-merkle/ac2b1e579663ba7a47a6a3da0df65dde_snapshot.json
-merkle/c11a453875a1b42cded5d9010b2544ea_metadata.json
-merkle/c11a453875a1b42cded5d9010b2544ea_snapshot.json
-merkle/c05062de4a9bdbc8621ae93739d4e1d8_metadata.json
-merkle/c05062de4a9bdbc8621ae93739d4e1d8_snapshot.json
-merkle/cb1687fa11b23506bbf1371db7df5484_metadata.json
-merkle/cb1687fa11b23506bbf1371db7df5484_snapshot.json
-merkle/d5b2ae384e4450e426ff6c1b73672321_metadata.json
-merkle/d5b2ae384e4450e426ff6c1b73672321_snapshot.json
-merkle/e0ca0d65d5ac887d117874be7823dfa5_metadata.json
-merkle/e0ca0d65d5ac887d117874be7823dfa5_snapshot.json
-merkle/f3c1fc902b90da0fdaa3d8c37aa4f000_metadata.json
-merkle/f3c1fc902b90da0fdaa3d8c37aa4f000_snapshot.json
-merkle/f486bbb896b0822517b15a414e75e37b_metadata.json
-merkle/f486bbb896b0822517b15a414e75e37b_snapshot.json
-merkle/snapshot_manager.py
-merkle/
-.gitignore
+# merkle: ignore runtime data artifacts only, NOT the source package
+merkle/*_snapshot.json
+merkle/*_metadata.json
 models/
 models/.locks/models--google--embeddinggemma-300m/1a6193244714d3d78be48666cb02cdbfac62ad86.lock
 models/.locks/models--google--embeddinggemma-300m/70ac42bce1699d89f19c011133cf97dfada83127.lock
@@ -310,7 +273,6 @@ models/models--google--embeddinggemma-300m/snapshots/57c266a740f537b4dc058e1b0cd
 models/models--google--embeddinggemma-300m/snapshots/57c266a740f537b4dc058e1b0cda161fd15afa75/2_Dense/model.safetensors
 models/models--google--embeddinggemma-300m/snapshots/57c266a740f537b4dc058e1b0cda161fd15afa75/3_Dense/config.json
 models/models--google--embeddinggemma-300m/snapshots/57c266a740f537b4dc058e1b0cda161fd15afa75/3_Dense/model.safetensors
-merkle/snapshot_manager.py
 
 # Local index artifacts
 projects/
