@@ -544,6 +544,15 @@ class IncrementalIndexer:
                 if resume_state and resume_enabled:
                     resume_state.status = "failed"
                     save_resume_state(Path(self.indexer.storage_dir), resume_state)
+                # Mirror the canceled path: persist a legible "failed" status to
+                # stats.json so a failed index is never mistaken for one still
+                # "indexing" (the failure mode that hid the missing-weights bug).
+                self.indexer.save_index(extra_metadata={
+                    "project_name": project_name,
+                    "project_path": project_path,
+                    "status": "failed",
+                    "last_indexed": datetime.now().isoformat(),
+                })
             except Exception:
                 pass
             return IncrementalIndexResult(
