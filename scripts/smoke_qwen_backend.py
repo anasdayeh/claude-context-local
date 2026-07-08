@@ -16,13 +16,19 @@ import glob
 import os
 import sys
 import time
+from pathlib import Path
 
 import numpy as np
+
+# Make the repo importable when run as `python scripts/smoke_qwen_backend.py`.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 def main() -> int:
     model_key = sys.argv[1] if len(sys.argv) > 1 else "qwen3-embedding-4b"
     expected_dim = int(os.environ.get("SMOKE_EXPECTED_DIM", "2560"))
+    max_docs = int(os.environ.get("SMOKE_MAX_DOCS", "80"))
+    doc_chars = int(os.environ.get("SMOKE_DOC_CHARS", "2000"))
     try:
         import psutil
         proc = psutil.Process()
@@ -46,10 +52,10 @@ def main() -> int:
         if "/.venv" in f or f.startswith(".venv") or "/tests/" in f:
             continue
         try:
-            docs.append(open(f, encoding="utf-8").read()[:2000])
+            docs.append(open(f, encoding="utf-8").read()[:doc_chars])
         except Exception:
             pass
-        if len(docs) >= 80:
+        if len(docs) >= max_docs:
             break
 
     queries = [
