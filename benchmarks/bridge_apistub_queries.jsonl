@@ -1,0 +1,8 @@
+{"query": "Which endpoint manages the human review queue for low-confidence entity merges?", "expected_files": ["routers/resolution.py"], "notes": "resolution queue, confidenceScore<0.95; distractors: review_items, relationships, entities"}
+{"query": "Where are geographic map features like wards, streets, and kerbside bays served?", "expected_files": ["routers/spatial.py"], "notes": "spatial map data endpoints"}
+{"query": "Where is the cross-entity search bar backend that ranks results by a simple substring score?", "expected_files": ["routers/search.py"], "notes": "global search; distractor: entities, resolution"}
+{"query": "Which module surfaces data conflicts and stale assertions that need human adjudication?", "expected_files": ["routers/review_items.py"], "notes": "review items; distractor: resolution (also human-review)"}
+{"query": "How do we export the OpenAPI schema from the command line?", "expected_files": ["cli.py"], "notes": "cli export-openapi; distractor: main.py (defines app)"}
+{"query": "Where are the Pydantic models mirroring the TypeScript contract shapes with camelCase aliases?", "expected_files": ["models.py"], "notes": "pydantic v2 models, alias_generator"}
+{"query": "Which endpoint creates a new investigation case and keeps it in memory for the process lifetime?", "expected_files": ["routers/cases.py"], "notes": "POST /api/cases in-memory; distractor: situations, signals"}
+{"query": "Where are the reusable bulk TypeAdapter validators for fixture data at boot time?", "expected_files": ["validators.py"], "notes": "TypeAdapter bulk validation; distractor: fixtures.py, models.py"}

@@ -79,7 +79,8 @@ def run(args: argparse.Namespace) -> int:
 
     t0 = time.perf_counter()
     index_result = server.index_directory(
-        str(repo), project_name=repo.name, incremental=False
+        str(repo), project_name=repo.name, incremental=False,
+        file_patterns=args.file_patterns or None,
     )
     index_secs = time.perf_counter() - t0
     if not index_result.get("success"):
@@ -230,6 +231,8 @@ def main() -> int:
     r.add_argument("--queries", required=True, help="labeled queries.jsonl")
     r.add_argument("--out", required=True, help="output JSON path")
     r.add_argument("--k", type=int, default=5)
+    r.add_argument("--file-patterns", nargs="+", default=None,
+                   help="glob(s) limiting indexed files, e.g. '*.py' (code-only slice)")
     r.set_defaults(func=run)
 
     rd = sub.add_parser("render", help="merge two run JSONs into report.md/json")

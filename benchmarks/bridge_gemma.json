@@ -1,0 +1,445 @@
+{
+  "summary": {
+    "label": "gemma",
+    "model_key": "google/embeddinggemma-300m",
+    "model_name": "google/embeddinggemma-300m",
+    "embedding_dimension": 768,
+    "backend": "torch",
+    "device": "mps:0",
+    "store": "/Volumes/Anas_2TB/AI/code-search/stores/gemma-ab-test",
+    "repo": "/Volumes/Anas_Repos/BRIDGE_Intelligence_Platform_v2/apps/api-stub/bridge_api_stub",
+    "k": 5,
+    "index_seconds": 26.1,
+    "chunks_added": 181,
+    "hit_at_1_rate": 0.75,
+    "hit_at_k_rate": 1.0,
+    "mean_latency_ms": 161.2,
+    "query_count": 8
+  },
+  "per_query": [
+    {
+      "query": "Which endpoint manages the human review queue for low-confidence entity merges?",
+      "expected_files": [
+        "routers/resolution.py"
+      ],
+      "notes": "resolution queue, confidenceScore<0.95; distractors: review_items, relationships, entities",
+      "hit_at_1": false,
+      "hit_at_k": true,
+      "top1_path": "models.py",
+      "latency_ms": 71.1,
+      "results": [
+        {
+          "rank": 1,
+          "path": "models.py",
+          "score": 0.5447,
+          "lines": "743-771",
+          "name": "PendingMerge",
+          "excerpt": "class PendingMerge(BridgeModel): \"\"\"A low-confidence entity resolution candidate awaiting human review. P3.5-01 Gap 2: Pydantic mirror of PendingMerge TypeScript contract. Only matches with confidenceScore < 0.95 appear "
+        },
+        {
+          "rank": 2,
+          "path": "routers/resolution.py",
+          "score": 0.5271,
+          "lines": "64-86",
+          "name": "list_pending_merges",
+          "excerpt": "@router.get(\"/pending\", response_model=PagedResponse[PendingMerge]) async def list_pending_merges( limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), ) -> PagedResponse[PendingMerge]: \"\"\"List pending ent"
+        },
+        {
+          "rank": 3,
+          "path": "models.py",
+          "score": 0.4478,
+          "lines": "699-740",
+          "name": "EntityResolutionResult",
+          "excerpt": "class EntityResolutionResult(BridgeModel): \"\"\"Result of entity resolution matching: auto-merged or pending review. P3.5-01 Gap 2: Pydantic mirror of EntityResolutionResult TypeScript contract. \"\"\" entity_id: str \"\"\"Canon"
+        },
+        {
+          "rank": 4,
+          "path": "routers/resolution.py",
+          "score": 0.4515,
+          "lines": "89-102",
+          "name": "get_pending_merge",
+          "excerpt": "@router.get(\"/{merge_id}\", response_model=PendingMerge) async def get_pending_merge(merge_id: str) -> PendingMerge: \"\"\"Retrieve a specific pending merge by ID.\"\"\" hit = _PENDING_MERGES_STORE.get(merge_id) if not hit: rai"
+        },
+        {
+          "rank": 5,
+          "path": "routers/resolution.py",
+          "score": 0.4338,
+          "lines": "115-137",
+          "name": "approve_merge",
+          "excerpt": "@router.post(\"/{merge_id}/approve\", response_model=MergeDecisionReceipt) async def approve_merge(merge_id: str, rationale: str, decided_by: str) -> MergeDecisionReceipt: \"\"\"Approve an entity merge. Records the decision a"
+        }
+      ]
+    },
+    {
+      "query": "Where are geographic map features like wards, streets, and kerbside bays served?",
+      "expected_files": [
+        "routers/spatial.py"
+      ],
+      "notes": "spatial map data endpoints",
+      "hit_at_1": true,
+      "hit_at_k": true,
+      "top1_path": "routers/spatial.py",
+      "latency_ms": 137.8,
+      "results": [
+        {
+          "rank": 1,
+          "path": "routers/spatial.py",
+          "score": 0.5025,
+          "lines": "79-93",
+          "name": "list_ward_boundaries",
+          "excerpt": "@router.get( \"/wards\", response_model=SpatialFeatureCollection, summary=\"List ward boundaries \u2014 full 18-ward Westminster borough (ONS OGL v3.0)\", ) async def list_ward_boundaries() -> SpatialFeatureCollection: \"\"\"Returns"
+        },
+        {
+          "rank": 2,
+          "path": "models.py",
+          "score": 0.4288,
+          "lines": "1259-1284",
+          "name": "BayDetail",
+          "excerpt": "class BayDetail(BridgeModel): \"\"\"Full bay detail record. Response: GET /api/spatial/bays/{bayId}. Principle 25: occupancy_estimate null \u2192 render '\u2014', not 0%. Mirrors contracts/spatial-entities.ts#BayDetail.\"\"\" id: str st"
+        },
+        {
+          "rank": 3,
+          "path": "routers/spatial.py",
+          "score": 0.4137,
+          "lines": "133-174",
+          "name": "get_kerbside",
+          "excerpt": "@router.get( \"/streets/{usrn}/kerbside\", response_model=KerbsideModel, summary=\"Get the rolled-out kerbside model for a USRN\", ) async def get_kerbside( usrn: str = PathParam(..., description=\"8-digit USRN, with or witho"
+        },
+        {
+          "rank": 4,
+          "path": "models.py",
+          "score": 0.3808,
+          "lines": "1220-1228",
+          "name": "KerbsideStreet",
+          "excerpt": "class KerbsideStreet(BridgeModel): \"\"\"Street summary header on the kerbside model.\"\"\" id: str usrn: str name: str ward_id: str = Field(..., serialization_alias=\"wardId\") classification: str | None = None traffic_sensitiv"
+        },
+        {
+          "rank": 5,
+          "path": "routers/search.py",
+          "score": 0.3574,
+          "lines": "45-63",
+          "name": "_search_streets",
+          "excerpt": "def _search_streets(q: str) -> list[SearchResultItem]: results = [] for s in STREETS: score = max( _score(s.get(\"name\", \"\"), q), _score(s.get(\"id\", \"\"), q), _score(s.get(\"usrn\", \"\"), q), ) if score > 0: results.append(Se"
+        }
+      ]
+    },
+    {
+      "query": "Where is the cross-entity search bar backend that ranks results by a simple substring score?",
+      "expected_files": [
+        "routers/search.py"
+      ],
+      "notes": "global search; distractor: entities, resolution",
+      "hit_at_1": true,
+      "hit_at_k": true,
+      "top1_path": "routers/search.py",
+      "latency_ms": 180.3,
+      "results": [
+        {
+          "rank": 1,
+          "path": "routers/search.py",
+          "score": 0.4066,
+          "lines": "32-42",
+          "name": "_score",
+          "excerpt": "def _score(text: str, q: str) -> float: \"\"\"Simple relevance score: 1.0 for exact match, 0.7 for prefix, 0.5 for substring.\"\"\" tl = text.lower() ql = q.lower() if tl == ql: return 1.0 if tl.startswith(ql): return 0.8 if q"
+        },
+        {
+          "rank": 2,
+          "path": "routers/search.py",
+          "score": 0.3974,
+          "lines": "149-166",
+          "name": "_search_cases",
+          "excerpt": "def _search_cases(q: str) -> list[SearchResultItem]: results = [] for c in _CASE_STORE: score = max( _score(c.get(\"title\", \"\"), q), _score(c.get(\"id\", \"\"), q), ) if score > 0: results.append(SearchResultItem( id=c[\"id\"],"
+        },
+        {
+          "rank": 3,
+          "path": "models.py",
+          "score": 0.4314,
+          "lines": "676-685",
+          "name": "SearchResultItem",
+          "excerpt": "class SearchResultItem(BridgeModel): \"\"\"One item in a search result set \u2014 entity-type agnostic.\"\"\" id: str entity_type: str name: str | None = None matched_field: str | None = None score: float = 1.0 snippet: str | None "
+        },
+        {
+          "rank": 4,
+          "path": "routers/search.py",
+          "score": 0.4152,
+          "lines": "169-200",
+          "name": "search",
+          "excerpt": "@router.get(\"\", response_model=SearchResponse) async def search( q: str = Query(..., min_length=1, description=\"Search query string\"), types: str | None = Query( None, description=\"Comma-separated entity types to include"
+        },
+        {
+          "rank": 5,
+          "path": "routers/search.py",
+          "score": 0.3679,
+          "lines": "45-63",
+          "name": "_search_streets",
+          "excerpt": "def _search_streets(q: str) -> list[SearchResultItem]: results = [] for s in STREETS: score = max( _score(s.get(\"name\", \"\"), q), _score(s.get(\"id\", \"\"), q), _score(s.get(\"usrn\", \"\"), q), ) if score > 0: results.append(Se"
+        }
+      ]
+    },
+    {
+      "query": "Which module surfaces data conflicts and stale assertions that need human adjudication?",
+      "expected_files": [
+        "routers/review_items.py"
+      ],
+      "notes": "review items; distractor: resolution (also human-review)",
+      "hit_at_1": false,
+      "hit_at_k": true,
+      "top1_path": "models.py",
+      "latency_ms": 182.5,
+      "results": [
+        {
+          "rank": 1,
+          "path": "models.py",
+          "score": 0.4435,
+          "lines": "743-771",
+          "name": "PendingMerge",
+          "excerpt": "class PendingMerge(BridgeModel): \"\"\"A low-confidence entity resolution candidate awaiting human review. P3.5-01 Gap 2: Pydantic mirror of PendingMerge TypeScript contract. Only matches with confidenceScore < 0.95 appear "
+        },
+        {
+          "rank": 2,
+          "path": "routers/review_items.py",
+          "score": 0.3977,
+          "lines": "24-109",
+          "name": "_build_review_items",
+          "excerpt": "def _build_review_items() -> list[dict]: latest_bt_score = _required(ASSERTIONS_BY_ID, \"ASRT-2026-04-21-005\") stale_bt_score = _required(ASSERTIONS_BY_ID, \"ASRT-2026-04-14-006\") permit_state_primary = _required(ASSERTION"
+        },
+        {
+          "rank": 3,
+          "path": "models.py",
+          "score": 0.4157,
+          "lines": "634-656",
+          "name": "ReviewItem",
+          "excerpt": "class ReviewItem(BridgeModel): \"\"\" A single item requiring human review \u2014 e.g. a data conflict flagged by the assertion system. Consumed by the Review Queue screen (Gap 8). \"\"\" id: str kind: ReviewItemKind status: Review"
+        },
+        {
+          "rank": 4,
+          "path": "models.py",
+          "score": 0.4081,
+          "lines": "95-101",
+          "name": "AssertionReviewStatus",
+          "excerpt": "class AssertionReviewStatus(str, Enum): confirmed = \"confirmed\" inferred = \"inferred\" stale = \"stale\" conflicting = \"conflicting\" unverified = \"unverified\" superseded = \"superseded\""
+        },
+        {
+          "rank": 5,
+          "path": "models.py",
+          "score": 0.4079,
+          "lines": "114-126",
+          "name": "Assertion",
+          "excerpt": "class Assertion(TemporalMetadata): id: str subject_entity_id: str subject_entity_type: str claim_type: str claim_value: str | int | float | bool | None source_system: str source_record_id: str | None confidence: Confiden"
+        }
+      ]
+    },
+    {
+      "query": "How do we export the OpenAPI schema from the command line?",
+      "expected_files": [
+        "cli.py"
+      ],
+      "notes": "cli export-openapi; distractor: main.py (defines app)",
+      "hit_at_1": true,
+      "hit_at_k": true,
+      "top1_path": "cli.py",
+      "latency_ms": 373.9,
+      "results": [
+        {
+          "rank": 1,
+          "path": "cli.py",
+          "score": 0.6472,
+          "lines": "14-27",
+          "name": "export_openapi",
+          "excerpt": "def export_openapi(out: Path | None = None) -> None: \"\"\"Generate the OpenAPI 3.1 spec from the live FastAPI app and write it to a file.\"\"\" from bridge_api_stub.main import app # FastAPI generates the OpenAPI schema on de"
+        },
+        {
+          "rank": 2,
+          "path": "cli.py",
+          "score": 0.6258,
+          "lines": "30-41",
+          "name": "main",
+          "excerpt": "def main() -> None: args = sys.argv[1:] if not args or args[0] == \"export-openapi\": out = None if \"--out\" in args: idx = args.index(\"--out\") if idx + 1 < len(args): out = Path(args[idx + 1]) export_openapi(out=out) else:"
+        },
+        {
+          "rank": 3,
+          "path": "routers/snapshots.py",
+          "score": 0.3711,
+          "lines": "39-47",
+          "name": "validate_snapshot",
+          "excerpt": "@router.post(\"/validate\", response_model=ValidationResult) async def validate_snapshot(manifest: SnapshotManifest) -> ValidationResult: \"\"\"Dry-run validation \u2014 parsing this request body IS the validation. If the manifest"
+        },
+        {
+          "rank": 4,
+          "path": "routers/snapshots.py",
+          "score": 0.3595,
+          "lines": "50-57",
+          "name": "import_snapshot",
+          "excerpt": "@router.post(\"/import\", response_model=SnapshotImportReceipt) async def import_snapshot(request: SnapshotImportRequest) -> SnapshotImportReceipt: _SNAPSHOT_STORE[request.manifest.snapshot_id] = request.manifest return Sn"
+        },
+        {
+          "rank": 5,
+          "path": "routers/snapshots.py",
+          "score": 0.3258,
+          "lines": "60-68",
+          "name": "list_snapshots",
+          "excerpt": "@router.get(\"\", response_model=PagedResponse[SnapshotManifest]) async def list_snapshots( limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0), ) -> PagedResponse[SnapshotManifest]: items = list(_SNAPSHOT_S"
+        }
+      ]
+    },
+    {
+      "query": "Where are the Pydantic models mirroring the TypeScript contract shapes with camelCase aliases?",
+      "expected_files": [
+        "models.py"
+      ],
+      "notes": "pydantic v2 models, alias_generator",
+      "hit_at_1": true,
+      "hit_at_k": true,
+      "top1_path": "models.py",
+      "latency_ms": 60.3,
+      "results": [
+        {
+          "rank": 1,
+          "path": "models.py",
+          "score": 0.441,
+          "lines": "24-38",
+          "name": "BridgeModel",
+          "excerpt": "class BridgeModel(BaseModel): \"\"\"Base model for all BRIDGE entities with consistent camelCase wire format (DL-08).\"\"\" model_config = ConfigDict( alias_generator=to_camel, populate_by_name=True, validate_by_alias=True, se"
+        },
+        {
+          "rank": 2,
+          "path": "models.py",
+          "score": 0.3651,
+          "lines": "390-394",
+          "name": "EntitySourceAlias",
+          "excerpt": "class EntitySourceAlias(BridgeModel): source_system: str source_id: str source_name: str confidence: ConfidenceTier"
+        },
+        {
+          "rank": 3,
+          "path": "models.py",
+          "score": 0.3504,
+          "lines": "473-476",
+          "name": "PromoterSourceAlias",
+          "excerpt": "class PromoterSourceAlias(BridgeModel): source_system: str source_id: str source_name: str"
+        },
+        {
+          "rank": 4,
+          "path": "validators.py",
+          "score": 0.4009,
+          "lines": "1-15",
+          "name": null,
+          "excerpt": "\"\"\"Module-level TypeAdapters for bulk fixture/source validation (P4.x-05). These are reusable validators that avoid recreating TypeAdapter instances on every call. Use them for bulk fixture validation at boot time. \"\"\" f"
+        },
+        {
+          "rank": 5,
+          "path": "models.py",
+          "score": 0.3116,
+          "lines": "562-575",
+          "name": "EntityRecord",
+          "excerpt": "class EntityRecord(BridgeModel): \"\"\" Lightweight entity summary used by search and list endpoints. Maps to the EntityRecord type in packages/contracts/src/entities.ts. \"\"\" id: str entity_type: str name: str | None usrn: "
+        }
+      ]
+    },
+    {
+      "query": "Which endpoint creates a new investigation case and keeps it in memory for the process lifetime?",
+      "expected_files": [
+        "routers/cases.py"
+      ],
+      "notes": "POST /api/cases in-memory; distractor: situations, signals",
+      "hit_at_1": true,
+      "hit_at_k": true,
+      "top1_path": "routers/cases.py",
+      "latency_ms": 102.4,
+      "results": [
+        {
+          "rank": 1,
+          "path": "routers/cases.py",
+          "score": 0.5949,
+          "lines": "313-364",
+          "name": "create_case",
+          "excerpt": "@router.post(\"\", response_model=Investigation, status_code=201) async def create_case(body: CreateCaseRequest) -> Investigation: \"\"\" Create a new investigation case. The case is held in-memory for the lifetime of the stu"
+        },
+        {
+          "rank": 2,
+          "path": "models.py",
+          "score": 0.4521,
+          "lines": "350-372",
+          "name": "Investigation",
+          "excerpt": "class Investigation(TemporalMetadata): id: str signal: str | None title: str status: CaseState case_type: str | None = None severity: str | None = None confidence: float | None = None opened_by: str opened_at: str assign"
+        },
+        {
+          "rank": 3,
+          "path": "routers/cases.py",
+          "score": 0.4741,
+          "lines": "305-310",
+          "name": "get_case",
+          "excerpt": "@router.get(\"/{case_id}\", response_model=Investigation) async def get_case(case_id: str) -> Investigation: hit = next((c for c in _CASE_STORE if c[\"id\"] == case_id), None) if not hit: raise HTTPException(status_code=404,"
+        },
+        {
+          "rank": 4,
+          "path": "models.py",
+          "score": 0.4342,
+          "lines": "659-673",
+          "name": "CreateCaseRequest",
+          "excerpt": "class CreateCaseRequest(BridgeModel): \"\"\"Request body for POST /api/cases.\"\"\" title: str signal: str | None = None situation: str | None = None opened_by: str assigned_to: str | None = None severity: Literal[\"critical\", "
+        },
+        {
+          "rank": 5,
+          "path": "routers/cases.py",
+          "score": 0.4198,
+          "lines": "283-302",
+          "name": "list_cases",
+          "excerpt": "@router.get(\"\", response_model=PagedResponse[Investigation]) async def list_cases( status: str | None = None, assigned_to: str | None = Query(None, alias=\"assignedTo\"), limit: int = Query(50, ge=1, le=200), offset: int ="
+        }
+      ]
+    },
+    {
+      "query": "Where are the reusable bulk TypeAdapter validators for fixture data at boot time?",
+      "expected_files": [
+        "validators.py"
+      ],
+      "notes": "TypeAdapter bulk validation; distractor: fixtures.py, models.py",
+      "hit_at_1": true,
+      "hit_at_k": true,
+      "top1_path": "validators.py",
+      "latency_ms": 181.7,
+      "results": [
+        {
+          "rank": 1,
+          "path": "validators.py",
+          "score": 0.5994,
+          "lines": "1-15",
+          "name": null,
+          "excerpt": "\"\"\"Module-level TypeAdapters for bulk fixture/source validation (P4.x-05). These are reusable validators that avoid recreating TypeAdapter instances on every call. Use them for bulk fixture validation at boot time. \"\"\" f"
+        },
+        {
+          "rank": 2,
+          "path": "fixtures.py",
+          "score": 0.3674,
+          "lines": "21-41",
+          "name": "_load_canonical_fixtures",
+          "excerpt": "def _load_canonical_fixtures() -> dict: if not _JSON_PATH.exists(): raise RuntimeError( f\"canonical-fixtures.json is missing at {_JSON_PATH}. Run 'pnpm --filter @bridge/fixtures export-json' \" \"from the repository root b"
+        },
+        {
+          "rank": 3,
+          "path": "fixtures.py",
+          "score": 0.3374,
+          "lines": "47-51",
+          "name": "_family",
+          "excerpt": "def _family(name: str) -> list[dict]: value = _DATA.get(name, []) if not isinstance(value, list): raise RuntimeError(f\"Fixture family '{name}' must be a JSON array in canonical-fixtures.json.\") return value"
+        },
+        {
+          "rank": 4,
+          "path": "routers/review_items.py",
+          "score": 0.3225,
+          "lines": "17-21",
+          "name": "_required",
+          "excerpt": "def _required(mapping: dict[str, dict], key: str) -> dict: value = mapping.get(key) if value is None: raise RuntimeError(f\"Canonical review item seed is missing required fixture id {key!r}.\") return value"
+        },
+        {
+          "rank": 5,
+          "path": "routers/spatial.py",
+          "score": 0.2724,
+          "lines": "72-73",
+          "name": "_features_from_fixture",
+          "excerpt": "def _features_from_fixture(raw_features: Iterable[dict]) -> list[SpatialFeature]: return [_feature_from_dict(f) for f in raw_features]"
+        }
+      ]
+    }
+  ]
+}
