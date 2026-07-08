@@ -1,5 +1,6 @@
 """Tests for MCP tool descriptions and their lengths."""
 
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 from fastmcp import FastMCP
@@ -18,7 +19,10 @@ class TestMCPToolDescriptions:
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mcp-test")
         strings = load_strings()
         register_tools(mcp, server, strings, executor)
-        self.tools = dict(mcp._tool_manager._tools)
+        # fastmcp 3.x: enumerate via the public async list_tools() (the private
+        # _tool_manager attribute was removed). Tool objects expose .name/.description.
+        tools_list = asyncio.run(mcp.list_tools())
+        self.tools = {t.name: t for t in tools_list}
 
     def _assert_description_length(self, tool_name):
         """Get tool description length."""
