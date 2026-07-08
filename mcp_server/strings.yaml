@@ -27,7 +27,7 @@ tools:
     Usage: find_similar_code(chunk_id from search_code, k=5)
 
   get_stats: |
-    Get indexing statistics for a project (without model info).
+    Get indexing statistics for a project, including the active embedding model.
     Usage: get_stats(project_path="/path/to/project")
 
   get_index_status: |

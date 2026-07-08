@@ -602,6 +602,7 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
                 "embedder_status": embedder_status.get("status"),
                 "embedder_backend": embedder_status.get("backend"),
                 "embedder_failure_summary": embedder_status.get("error"),
+                "embedding_model": embedder_status.get("model_name"),
             }
         )
         meta.update(reindex_meta)
@@ -816,16 +817,22 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
                     "embedder_status": embedder_status.get("status"),
                     "embedder_backend": embedder_status.get("backend"),
                     "embedder_failure_summary": embedder_status.get("error"),
+                    "embedding_model": embedder_status.get("model_name"),
                 },
             )
         return coerced
 
-    @mcp.tool(description=strings.get("tools", {}).get("get_stats", "Get stats (without model info)"))
+    @mcp.tool(description=strings.get("tools", {}).get("get_stats", "Get index statistics including the active embedding model"))
     async def get_stats(project_path: str = None, ctx: Optional[Context] = None) -> dict:
         result = await _run(server.get_stats, project_path)
         coerced = _coerce_result(result)
         if isinstance(coerced, dict):
+            try:
+                embedder_status = server.get_embedder_status()
+            except Exception:
+                embedder_status = {}
             meta = _base_meta(project_path_used=project_path)
+            meta["embedding_model"] = embedder_status.get("model_name")
             return _augment_dict_response(
                 tool_name="get_stats",
                 response=coerced,
