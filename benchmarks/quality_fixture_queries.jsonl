@@ -1,0 +1,6 @@
+{"query": "How do we know when an access token is about to expire and needs renewal?", "expected_files": ["oauth_token_cache.py"], "notes": "semantic: maps 'renewal/expire' to token_needs_refresh; distractor noise.py must not win"}
+{"query": "Where do we keep API bearer credentials so we don't re-authenticate on every call?", "expected_files": ["oauth_token_cache.py"], "notes": "semantic: 'keep credentials' -> caching class OAuthTokenCache"}
+{"query": "Check whether the money a customer actually paid matches the sum of what they were billed.", "expected_files": ["invoice_reconciler.py"], "notes": "semantic: payment-vs-billed reconciliation, avoids lexical 'invoice'"}
+{"query": "Detect a mismatch between billed line items and the settlement amount received.", "expected_files": ["invoice_reconciler.py"], "notes": "semantic: 'settlement amount' -> payment_amount comparison"}
+{"query": "Make sure temperature-sensitive pharmaceutical shipments travel via a refrigerated carrier.", "expected_files": ["warehouse_router.py"], "notes": "semantic: 'temperature-sensitive pharma' -> cold-chain routing of refrigerated medicine"}
+{"query": "Pick a delivery method that keeps perishable goods cold while in transit.", "expected_files": ["warehouse_router.py"], "notes": "semantic: 'perishable/cold in transit' -> choose_cold_chain_shipping_route"}
