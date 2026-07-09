@@ -1,0 +1,90 @@
+# Gate-C model bake-off — declarative arm registry.
+# Add / tweak / disable a model by editing THIS file only; no runner code changes.
+# ${var} interpolates from `paths` (and falls back to env vars); env BENCH_PATH_<KEY>
+# overrides any path at runtime. Fields marked TODO are filled after doc research.
+
+paths:
+  repo_root:    /Volumes/Anas_2TB/AI/code-search/repos/claude-context-local
+  external:     /Volumes/Anas_2TB/AI/code-search
+  corpus:       ${external}/benchmarks/bridge_corpus
+  chunk_dump:   ${repo_root}/benchmarks/chunk_dump.json
+  queries:      ${repo_root}/benchmarks/bridge_quality_queries.jsonl
+  out_dir:      ${repo_root}/benchmarks/arms
+  blind_dir:    ${repo_root}/benchmarks/blind
+  hf_home:      /Volumes/Anas_Repos/AppState/caches/huggingface
+  mlx_venv:     ${external}/.venv-mlx
+  gguf_venv:    ${external}/.venv-gguf
+  stores_root:  ${external}/stores
+
+defaults:
+  k: 5
+  batch: 8
+  log_level: INFO
+
+# Query-side instruction reused by the Qwen family (documents get NO prefix).
+_anchors:
+  qwen_query_instruction: &qwen_qi >-
+    Instruct: Given a code search query, retrieve relevant code and documentation
+    passages that answer the query
+    Query:
+
+arms:
+  - label: gemma                       # baseline / current default
+    runtime: torch
+    model_id: google/embeddinggemma-300m
+    model_key: google/embeddinggemma-300m
+    query_instruction: null            # Gemma uses its own prompt_name internally
+    doc_instruction: null
+    expected_dim: 768
+    enabled: true
+
+  - label: qwen_bf16                   # full-precision torch/MPS (the slow one)
+    runtime: torch
+    model_id: Qwen/Qwen3-Embedding-4B
+    model_key: qwen3-embedding-4b
+    query_instruction: *qwen_qi
+    doc_instruction: null
+    expected_dim: 2560
+    dtype: bfloat16
+    enabled: true
+
+  - label: qwen_mlx                    # 4-bit MLX (fast/light) — PROVEN working
+    runtime: mlx
+    model_id: mlx-community/Qwen3-Embedding-4B-4bit-DWQ
+    query_instruction: *qwen_qi
+    doc_instruction: null
+    expected_dim: 2560
+    enabled: true
+
+  - label: bge_code                    # code-specialist embedder; last-token pooling
+    runtime: torch
+    model_id: BAAI/bge-code-v1
+    model_key: bge-code-v1
+    # Verified on card: bge-code-v1 query format is "<instruct>{task}\n<query>{query}";
+    # documents get NO prefix. The wrapper prepends this string to each query.
+    query_instruction: "<instruct>Given a code search query, retrieve relevant code and documentation that answer the query\n<query>"
+    doc_instruction: null
+    trust_remote_code: true
+    expected_dim: null                 # auto-detect at runtime; assert once known
+    enabled: true
+
+  - label: nomic_code_gguf             # code-specialist (7B) via GGUF quant (Q6_K, ~5.8GB)
+    runtime: gguf
+    model_id: nomic-ai/nomic-embed-code-GGUF
+    gguf_file: nomic-embed-code.Q6_K.gguf
+    # Verified on card: queries get this exact prefix; CODE/docs get NONE.
+    query_instruction: "Represent this query for searching relevant code: "
+    doc_instruction: null
+    expected_dim: null                        # auto-detect; assert once known
+    pooling: last                             # nomic-embed-code uses LAST-token pooling;
+    # llama-cpp-python won't auto-read it, so the gguf runner sets pooling_type=LAST, then Gate-B checks.
+    enabled: true
+
+# Second-stage reranker: reuses an existing arm's top-N retrieval, rescored by a
+# cross-encoder. Tests whether the embedder — or the missing rerank — is the ceiling.
+reranker:
+  enabled: true
+  base_arm: gemma                      # which arm's candidates to rerank
+  model_id: Qwen/Qwen3-Reranker-0.6B   # also downloaded: Qwen3-Reranker-4B
+  runtime: torch
+  top_n: 20                            # rescore this many FAISS hits, keep best k

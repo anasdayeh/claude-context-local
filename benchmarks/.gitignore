@@ -1,0 +1,12 @@
+# PUBLIC fork — never commit BRIDGE-derived or per-run artifacts (they embed
+# private source code / internal structure). Only the generic harness + config +
+# the synthetic (non-BRIDGE) fixture are tracked.
+chunk_dump.json
+arms/
+blind/
+bridge_*.jsonl
+bridge_*.json
+report.json
+report.md
+*_gemma.json
+*_qwen.json

@@ -36,10 +36,31 @@ def _qwen_factory(model_name=None, **kwargs):
     )
 
 
+# BAAI/bge-code-v1 is a code-specialist embedder (last-token pooling). Queries get
+# the "<instruct>{task}\n<query>" prefix (verified on the model card); documents get
+# none. trust_remote_code is required for its custom model/pooling code.
+_BGE_CODE_QUERY_INSTRUCTION = (
+    "<instruct>Given a code search query, retrieve relevant code and "
+    "documentation that answer the query\n<query>"
+)
+
+
+def _bge_code_factory(model_name=None, **kwargs):
+    """Factory for BAAI/bge-code-v1."""
+    return SentenceTransformerModel(
+        model_name="BAAI/bge-code-v1",
+        trust_remote_code=True,
+        query_instruction=_BGE_CODE_QUERY_INSTRUCTION,
+        **kwargs,
+    )
+
+
 AVAILABLE_MODELS = {
     "google/embeddinggemma-300m": _gemma_factory,
     "embeddinggemma-300m": _gemma_factory,  # Alias
     "Qwen/Qwen3-Embedding-4B": _qwen_factory,
     "qwen3-embedding-4b": _qwen_factory,  # Alias
+    "BAAI/bge-code-v1": _bge_code_factory,
+    "bge-code-v1": _bge_code_factory,  # Alias
     "all-MiniLM-L6-v2": SentenceTransformerModel,  # Useful default/fallback
 }

@@ -37,6 +37,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -61,6 +62,45 @@ def _hit(paths: list[str], expected: list[str]) -> bool:
     return any(any(exp in p for p in paths) for exp in expected)
 
 
+class _RamSampler:
+    """Sample system free-RAM % on a background thread so each run records the
+    memory pressure it actually experienced. The whole point is to never again
+    confuse 'this model is slow' with 'the machine was starved by other apps'."""
+
+    def __init__(self, interval: float = 1.0):
+        self.interval = interval
+        self._stop = threading.Event()
+        self._t: threading.Thread | None = None
+        self.samples: list[float] = []
+
+    def _loop(self):
+        import psutil
+        while not self._stop.is_set():
+            try:
+                self.samples.append(100.0 - psutil.virtual_memory().percent)
+            except Exception:
+                pass
+            self._stop.wait(self.interval)
+
+    def __enter__(self):
+        self._t = threading.Thread(target=self._loop, daemon=True)
+        self._t.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        if self._t:
+            self._t.join(timeout=2)
+
+    @property
+    def min_free(self) -> float | None:
+        return round(min(self.samples), 1) if self.samples else None
+
+    @property
+    def mean_free(self) -> float | None:
+        return round(sum(self.samples) / len(self.samples), 1) if self.samples else None
+
+
 def run(args: argparse.Namespace) -> int:
     # Model + store selection is read at server construction / import time,
     # so set the environment BEFORE importing any server module.
@@ -78,10 +118,11 @@ def run(args: argparse.Namespace) -> int:
     server = CodeSearchServer()
 
     t0 = time.perf_counter()
-    index_result = server.index_directory(
-        str(repo), project_name=repo.name, incremental=False,
-        file_patterns=args.file_patterns or None,
-    )
+    with _RamSampler() as ram:
+        index_result = server.index_directory(
+            str(repo), project_name=repo.name, incremental=False,
+            file_patterns=args.file_patterns or None,
+        )
     index_secs = time.perf_counter() - t0
     if not index_result.get("success"):
         print(f"indexing failed: {index_result}", file=sys.stderr)
@@ -121,6 +162,7 @@ def run(args: argparse.Namespace) -> int:
             "query": q,
             "expected_files": expected,
             "notes": row.get("notes", ""),
+            "lang": row.get("lang", "?"),
             "hit_at_1": _hit(paths[:1], expected),
             "hit_at_k": _hit(paths, expected),
             "top1_path": paths[0] if paths else None,
@@ -129,6 +171,17 @@ def run(args: argparse.Namespace) -> int:
         })
 
     n = len(per_query)
+    langs = sorted({p["lang"] for p in per_query})
+    per_lang = {}
+    for lg in langs:
+        rows_lg = [p for p in per_query if p["lang"] == lg]
+        m = len(rows_lg)
+        per_lang[lg] = {
+            "n": m,
+            "hit_at_1_rate": round(sum(p["hit_at_1"] for p in rows_lg) / m, 3) if m else None,
+            "hit_at_k_rate": round(sum(p["hit_at_k"] for p in rows_lg) / m, 3) if m else None,
+        }
+    import psutil as _ps
     summary = {
         "label": args.label,
         "model_key": args.model_key,
@@ -145,6 +198,10 @@ def run(args: argparse.Namespace) -> int:
         "hit_at_k_rate": round(sum(p["hit_at_k"] for p in per_query) / n, 3) if n else None,
         "mean_latency_ms": round(sum(p["latency_ms"] for p in per_query) / n, 1) if n else None,
         "query_count": n,
+        "per_lang": per_lang,
+        "ram_free_pct_min_during_index": ram.min_free,
+        "ram_free_pct_mean_during_index": ram.mean_free,
+        "system_total_gb": round(_ps.virtual_memory().total / 1e9, 1),
     }
     payload = {"summary": summary, "per_query": per_query}
     out = Path(args.out).expanduser()
