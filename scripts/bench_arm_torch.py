@@ -56,8 +56,11 @@ def main() -> int:
     if a.limit:
         chunks = chunks[:a.limit]
     queries = bc.load_jsonl(paths["queries"])
+    dataset_validation = bc.validate_dataset(chunks, queries)
     k = defaults.get("k", 5)
-    batch = a.batch or defaults.get("batch", 8)
+    batch = a.batch or arm.get("batch") or defaults.get("batch", 8)
+    reranker = cfg.get("reranker", {}) or {}
+    candidate_k = max(k, 10, int(reranker.get("top_n", k)) if reranker.get("enabled") else k)
     log.info("arm=%s model=%s chunks=%d queries=%d device=%s batch=%d",
              a.arm, arm["model_id"], len(chunks), len(queries), a.device, batch)
 
@@ -83,20 +86,31 @@ def main() -> int:
         dv2 = np.asarray(model.encode_document(doc_texts[:8], **enc), dtype=np.float32)  # determinism
         embed_s = time.perf_counter() - te
 
-    det = bool(np.allclose(doc_vecs[:8], dv2, atol=1e-4))
     gate = core.gate_b_checks(doc_vecs, expected_dim=arm.get("expected_dim"))
-    gate["deterministic"] = det
+    gate.update(core.determinism_check(doc_vecs[:8], dv2))
     log.info("GATE B: %s", gate)
-    if not gate["all_finite"]:
-        log.error("NON-FINITE embeddings for arm %s — results are unusable", a.arm)
+    core.validate_gate_b(gate)
+
+    execution = (
+        model.get_execution_info()
+        if hasattr(model, "get_execution_info")
+        else {
+            "requested_device": a.device,
+            "actual_device": a.device,
+            "fallback_events": [],
+            "degraded": False,
+        }
+    )
 
     out_path = a.out or str(Path(out_dir) / f"arm_{a.arm}.json")
     payload = core.evaluate(
         label=a.arm, model_key=key, model_name=arm["model_id"], backend="torch",
-        device=a.device, dim=int(doc_vecs.shape[1]),
+        device=execution["actual_device"], dim=int(doc_vecs.shape[1]),
         chunks=chunks, doc_vecs=doc_vecs, queries=queries, query_vecs=q_vecs,
-        k=k, embed_seconds=embed_s,
-        telemetry={**ram.stat(), "load_seconds": round(load_s, 1), "gate_b": gate},
+        k=k, candidate_k=candidate_k, embed_seconds=embed_s,
+        telemetry={**ram.stat(), "load_seconds": round(load_s, 1), "gate_b": gate,
+                   "execution": execution, "dataset_validation": dataset_validation},
+        fingerprint=bc.run_fingerprint(cfg, arm),
         out_path=out_path,
     )
     s = payload["summary"]

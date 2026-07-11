@@ -83,3 +83,34 @@ def test_embedder_reduces_batch_on_memory_pressure(monkeypatch):
 
     assert len(results) == 3
     assert any("memory-pressure backoff" in msg.lower() for msg in messages)
+
+
+def test_cpu_oom_does_not_loop_through_cpu_fallback_again():
+    calls = []
+
+    class CpuModel:
+        _device = "cpu"
+        _fallback_attempted = True
+
+        def _reset_model(self):
+            calls.append("reset")
+
+    embedder = CodeEmbedder.__new__(CodeEmbedder)
+    embedder._model = CpuModel()
+
+    assert embedder._force_cpu_fallback() is False
+    assert calls == []
+
+
+def test_cpu_fallback_requires_a_real_device_transition():
+    calls = []
+
+    class DeviceLessModel:
+        def _reset_model(self):
+            calls.append("reset")
+
+    embedder = CodeEmbedder.__new__(CodeEmbedder)
+    embedder._model = DeviceLessModel()
+
+    assert embedder._force_cpu_fallback() is False
+    assert calls == []

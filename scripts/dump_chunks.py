@@ -10,7 +10,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -18,12 +17,35 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from chunking.multi_language_chunker import MultiLanguageChunker  # noqa: E402
+from embeddings.content_formatter import format_embedding_content  # noqa: E402
+from scripts.bench_artifacts import atomic_write_json  # noqa: E402
+
+
+def serialize_chunk(chunk, *, input_mode: str, max_chars: int) -> dict:
+    source = getattr(chunk, "content", None) or ""
+    text = source if input_mode == "raw" else format_embedding_content(chunk, max_chars=max_chars)
+    rel = getattr(chunk, "relative_path", None) or getattr(chunk, "file_path", None)
+    return {
+        "chunk_id": getattr(chunk, "chunk_id", None)
+        or f"{rel}:{getattr(chunk, 'start_line', '?')}-{getattr(chunk, 'end_line', '?')}",
+        "path": rel,
+        "start_line": getattr(chunk, "start_line", None),
+        "end_line": getattr(chunk, "end_line", None),
+        "name": getattr(chunk, "name", None),
+        "chunk_type": getattr(chunk, "chunk_type", None),
+        "text": text,
+        "input_policy": input_mode,
+        "source_chars": len(source),
+        "embedded_chars": len(text),
+    }
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--corpus", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--input-mode", choices=("production", "raw"), default="production")
+    ap.add_argument("--max-chars", type=int, default=2048)
     args = ap.parse_args()
 
     corpus = Path(args.corpus).expanduser()
@@ -44,18 +66,8 @@ def main() -> int:
             print(f"  chunk fail {f}: {e}", file=sys.stderr)
             continue
         for c in chunks:
-            rel = getattr(c, "relative_path", None) or str(f)
-            out.append({
-                "chunk_id": getattr(c, "chunk_id", None) or f"{rel}:{getattr(c, 'start_line', '?')}-{getattr(c, 'end_line', '?')}",
-                "path": rel,
-                "start_line": getattr(c, "start_line", None),
-                "end_line": getattr(c, "end_line", None),
-                "name": getattr(c, "name", None),
-                "chunk_type": getattr(c, "chunk_type", None),
-                "text": getattr(c, "content", None),
-            })
-    Path(args.out).expanduser().parent.mkdir(parents=True, exist_ok=True)
-    Path(args.out).expanduser().write_text(json.dumps(out, indent=2))
+            out.append(serialize_chunk(c, input_mode=args.input_mode, max_chars=args.max_chars))
+    atomic_write_json(Path(args.out).expanduser(), out)
     print(f"dumped {len(out)} chunks from {n_files} supported files "
           f"({n_skipped} unsupported) -> {args.out}")
     return 0

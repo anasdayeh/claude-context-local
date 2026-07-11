@@ -51,19 +51,21 @@ async def test_stdio_search_code_keeps_transport_alive(tmp_path):
 
 
 @pytest.mark.integration
-def test_import_order_regression_faiss_before_sentence_transformer():
+def test_supported_import_order_sentence_transformer_before_faiss():
+    hf_home = Path(os.environ.get("HF_HOME", "")).expanduser()
+    configured_cache = hf_home / "hub" if str(hf_home) not in {"", "."} else ROOT / "models"
     code = f"""
 from pathlib import Path
-import faiss
 from sentence_transformers import SentenceTransformer
 
-cache_root = Path({str(ROOT / 'models')!r})
+cache_root = Path({str(configured_cache)!r})
 model = SentenceTransformer(
     'google/embeddinggemma-300m',
     cache_folder=str(cache_root),
     trust_remote_code=True,
     device='cpu',
 )
+import faiss
 print(model.get_sentence_embedding_dimension())
 """
     result = subprocess.run(

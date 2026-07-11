@@ -21,7 +21,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from bench_dataset import validate_comparable_runs  # noqa: E402
+from bench_artifacts import atomic_write_json, atomic_write_text  # noqa: E402
 
 
 def _letters(n: int) -> list[str]:
@@ -49,6 +54,7 @@ def _det_shuffle(n: int, seed_str: str) -> list[int]:
 
 def make(args: argparse.Namespace) -> int:
     runs = [json.loads(Path(p).expanduser().read_text()) for p in args.inputs]
+    validate_comparable_runs(runs)
     labels = [r["summary"]["label"] for r in runs]
     n = min(len(r["per_query"]) for r in runs)
     letters = _letters(len(runs))
@@ -94,8 +100,8 @@ def make(args: argparse.Namespace) -> int:
         key["queries"].append(qk)
     out_dir = Path(args.out_dir).expanduser()
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "blind_report.md").write_text("\n".join(L))
-    (out_dir / "blind_key.json").write_text(json.dumps(key, indent=2))
+    atomic_write_text(out_dir / "blind_report.md", "\n".join(L))
+    atomic_write_json(out_dir / "blind_key.json", key)
     print(f"wrote {out_dir}/blind_report.md + blind_key.json  ({len(runs)} arms, {n} queries)")
     return 0
 
@@ -135,7 +141,7 @@ def score(args: argparse.Namespace) -> int:
     for i, row in enumerate(rows, 1):
         sc = ", ".join(f"{a}={row['scores'].get(a, '?')}" for a in arms)
         L.append(f"- Q{i} ({row['lang']}) winner=**{row.get('winner', '?')}** — {sc} — {row['q'][:80]}")
-    Path(args.out).expanduser().write_text("\n".join(L))
+    atomic_write_text(Path(args.out).expanduser(), "\n".join(L))
     print(f"scored -> {args.out}")
     for a in sorted(arms, key=lambda a: -totals[a]):
         print(f"  {a}: mean={totals[a] / n:.2f} wins={wins[a]}")

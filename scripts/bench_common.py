@@ -15,6 +15,9 @@ import re
 import sys
 from pathlib import Path
 
+import bench_artifacts
+import bench_dataset
+
 try:
     import yaml  # pyyaml
 except Exception:  # pragma: no cover - guidance if a side venv lacks pyyaml
@@ -92,6 +95,39 @@ def enabled_arms(cfg: dict, runtime: str | None = None) -> list[dict]:
             continue
         out.append(a)
     return out
+
+
+def run_fingerprint(cfg: dict, arm: dict) -> dict:
+    """Fingerprint an arm's data, config, and executable source inputs."""
+    root = Path(__file__).resolve().parent.parent
+    runner = {
+        "torch": root / "scripts" / "bench_arm_torch.py",
+        "mlx": root / "scripts" / "bench_arm_mlx.py",
+        "gguf": root / "scripts" / "bench_arm_gguf.py",
+    }[arm["runtime"]]
+    source_paths = [
+        runner,
+        root / "scripts" / "_arm_core.py",
+        root / "scripts" / "bench_dataset.py",
+        root / "scripts" / "bench_artifacts.py",
+        Path(__file__),
+    ]
+    if arm["runtime"] == "torch":
+        source_paths.extend([
+            root / "embeddings" / "sentence_transformer.py",
+            root / "embeddings" / "embedding_models_register.py",
+        ])
+    return bench_artifacts.build_run_fingerprint(
+        chunk_path=cfg["paths"]["chunk_dump"],
+        query_path=cfg["paths"]["queries"],
+        config_path=cfg["_config_path"],
+        arm=arm,
+        source_paths=source_paths,
+    )
+
+
+def validate_dataset(chunks: list[dict], queries: list[dict]) -> dict:
+    return bench_dataset.validate_query_labels(chunks, queries)
 
 
 def setup_logging(name: str, out_dir=None, level=None) -> logging.Logger:

@@ -47,6 +47,12 @@ def main() -> int:
     os.environ.setdefault("HF_HOME", paths["hf_home"])
     log = bc.setup_logging(f"arm_{a.arm}", out_dir=paths["out_dir"], level=defaults.get("log_level"))
 
+    chunks = bc.load_chunks(paths["chunk_dump"])
+    if a.limit:
+        chunks = chunks[:a.limit]
+    queries = bc.load_jsonl(paths["queries"])
+    dataset_validation = bc.validate_dataset(chunks, queries)
+
     from huggingface_hub import hf_hub_download
     gguf_path = hf_hub_download(arm["model_id"], arm["gguf_file"])
     log.info("gguf: %s", gguf_path)
@@ -71,10 +77,6 @@ def main() -> int:
     log.info("loaded llama.cpp in %.1fs (pooling=%s, n_ctx=%d, gpu_layers=%d)",
              load_s, pooling, a.n_ctx, a.n_gpu_layers)
 
-    chunks = bc.load_chunks(paths["chunk_dump"])
-    if a.limit:
-        chunks = chunks[:a.limit]
-    queries = bc.load_jsonl(paths["queries"])
     qi = arm.get("query_instruction") or ""
     di = arm.get("doc_instruction") or ""
 
@@ -96,19 +98,23 @@ def main() -> int:
         dv2 = embed([c.get("text") or "" for c in chunks[:8]], di)  # determinism probe
         embed_s = time.perf_counter() - te
 
-    det = bool(np.allclose(doc_vecs[:8], dv2, atol=1e-3))
     gate = core.gate_b_checks(doc_vecs, expected_dim=arm.get("expected_dim"))
-    gate["deterministic"] = det
+    gate.update(core.determinism_check(doc_vecs[:8], dv2))
     log.info("GATE B: %s", gate)
-    if not gate["all_finite"]:
-        log.error("NON-FINITE embeddings — check pooling_type / prefixes for %s", a.arm)
+    core.validate_gate_b(gate)
+
+    reranker = cfg.get("reranker", {}) or {}
+    k = defaults.get("k", 5)
+    candidate_k = max(k, 10, int(reranker.get("top_n", k)) if reranker.get("enabled") else k)
 
     payload = core.evaluate(
         label=a.arm, model_key=arm["model_id"], model_name=arm["gguf_file"],
         backend="gguf(llama.cpp)", device="metal", dim=int(doc_vecs.shape[1]),
         chunks=chunks, doc_vecs=doc_vecs, queries=queries, query_vecs=q_vecs,
-        k=defaults.get("k", 5), embed_seconds=embed_s,
-        telemetry={**ram.stat(), "load_seconds": round(load_s, 1), "gate_b": gate},
+        k=k, candidate_k=candidate_k, embed_seconds=embed_s,
+        telemetry={**ram.stat(), "load_seconds": round(load_s, 1), "gate_b": gate,
+                   "dataset_validation": dataset_validation},
+        fingerprint=bc.run_fingerprint(cfg, arm),
         out_path=str(Path(paths["out_dir"]) / f"arm_{a.arm}.json"),
     )
     s = payload["summary"]

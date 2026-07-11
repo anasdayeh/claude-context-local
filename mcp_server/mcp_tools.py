@@ -540,7 +540,24 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
             mode_used = None
             embedder_status = {}
         if not mode_used:
+            mode_used = coerced.get("search_mode_used")
+        if not mode_used and coerced.get("fallback_mode") == "fts":
+            mode_used = "fts"
+        if not mode_used:
             mode_used = "semantic" if search_mode == "auto" else search_mode
+
+        quality_state = coerced.get("quality_state")
+        if not quality_state:
+            if coerced.get("semantic_available") is False and mode_used != "fts":
+                quality_state = "semantic_unavailable"
+            elif mode_used == "fts" and search_mode != "fts":
+                quality_state = "fts_degraded"
+            elif mode_used == "fts":
+                quality_state = "fts"
+            elif embedder_status.get("degraded"):
+                quality_state = "semantic_degraded"
+            else:
+                quality_state = "semantic"
 
         # Optional background reindexing when index is stale.
         reindex_meta: dict[str, Any] = {}
@@ -603,6 +620,11 @@ def register_tools(mcp: FastMCP, server: CodeSearchServer, strings: dict, execut
                 "embedder_backend": embedder_status.get("backend"),
                 "embedder_failure_summary": embedder_status.get("error"),
                 "embedding_model": embedder_status.get("model_name"),
+                "requested_device": embedder_status.get("requested_device"),
+                "actual_device": embedder_status.get("actual_device") or embedder_status.get("device"),
+                "fallback_events": list(embedder_status.get("fallback_events") or []),
+                "quality_state": quality_state,
+                "semantic_available": bool(coerced.get("semantic_available", mode_used != "fts")),
             }
         )
         meta.update(reindex_meta)

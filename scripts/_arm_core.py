@@ -51,9 +51,41 @@ def gate_b_checks(doc_vecs, expected_dim=None):
     }
 
 
+def determinism_check(reference, repeat, min_cosine=0.9999):
+    """Compare repeated embeddings without demanding bitwise accelerator output."""
+    a = np.asarray(reference, dtype=np.float32)
+    b = np.asarray(repeat, dtype=np.float32)
+    if a.shape != b.shape or a.ndim != 2 or not a.size:
+        return {"deterministic": False, "min_cosine": None, "max_abs_diff": None}
+    an = normalize(a.copy())
+    bn = normalize(b.copy())
+    cosine = np.sum(an * bn, axis=1)
+    minimum = float(np.min(cosine))
+    return {
+        "deterministic": bool(np.isfinite(cosine).all() and minimum >= min_cosine),
+        "min_cosine": minimum,
+        "max_abs_diff": float(np.max(np.abs(a - b))),
+    }
+
+
+def validate_gate_b(gate):
+    """Raise when a Gate-B invariant fails instead of treating it as telemetry."""
+    failures = []
+    if not gate.get("all_finite"):
+        failures.append("finite embeddings")
+    if not gate.get("dim_ok"):
+        failures.append("embedding dimension")
+    if not gate.get("unit_norm_after_normalize"):
+        failures.append("unit-normal vectors")
+    if not gate.get("deterministic"):
+        failures.append("deterministic embeddings")
+    if failures:
+        raise ValueError("Gate B failed: " + ", ".join(failures))
+
+
 def summarize(*, label, model_key, model_name, backend, device, dim, chunks_count,
               per_query, k=5, index_seconds=None, embed_seconds=None,
-              telemetry=None, out_path=None):
+              telemetry=None, out_path=None, candidate_k=None, fingerprint=None):
     """Build the standard run payload {summary, per_query} from an already-scored
     per_query list (each entry has hit_at_1/hit_at_k/lang). Shared by evaluate()
     (vector arms) and rerank_arm.py (which reorders existing candidates)."""
@@ -67,32 +99,46 @@ def summarize(*, label, model_key, model_name, backend, device, dim, chunks_coun
             "n": len(rows),
             "hit_at_1_rate": round(sum(p["hit_at_1"] for p in rows) / m, 3),
             "hit_at_k_rate": round(sum(p["hit_at_k"] for p in rows) / m, 3),
+            "recall_at_10_rate": round(sum(p.get("hit_at_10", p["hit_at_k"]) for p in rows) / m, 3),
         }
     summary = {
         "label": label, "model_key": model_key, "model_name": model_name,
         "embedding_dimension": dim, "backend": backend, "device": device,
-        "repo": "chunk_dump", "k": k,
+        "repo": "chunk_dump", "k": k, "candidate_k": candidate_k or k,
         "index_seconds": round(index_seconds, 2) if index_seconds else None,
         "embed_seconds": round(embed_seconds, 2) if embed_seconds else None,
         "chunks_added": chunks_count,
         "hit_at_1_rate": round(sum(p["hit_at_1"] for p in per_query) / n, 3),
         "hit_at_k_rate": round(sum(p["hit_at_k"] for p in per_query) / n, 3),
+        "recall_at_10_rate": round(
+            sum(p.get("hit_at_10", p["hit_at_k"]) for p in per_query) / n, 3
+        ),
         "mean_latency_ms": round(sum(p.get("latency_ms", 0) for p in per_query) / n, 1),
         "query_count": len(per_query),
         "per_lang": per_lang,
         "telemetry": telemetry or {},
     }
-    payload = {"summary": summary, "per_query": per_query}
+    from bench_dataset import ranking_metrics
+    summary.update(ranking_metrics(per_query, k=k))
+    payload = {
+        "artifact": {
+            "schema_version": 2,
+            "status": "complete",
+            "fingerprint": fingerprint,
+        },
+        "summary": summary,
+        "per_query": per_query,
+    }
     if out_path:
-        Path(out_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
-        Path(out_path).expanduser().write_text(json.dumps(payload, indent=2))
+        from bench_artifacts import atomic_write_json
+        atomic_write_json(out_path, payload)
     return payload
 
 
 def evaluate(*, label, model_key, model_name, backend, device, dim,
              chunks, doc_vecs, queries, query_vecs, k=5,
              index_seconds=None, embed_seconds=None, telemetry=None,
-             out_path=None):
+             out_path=None, candidate_k=None, fingerprint=None):
     """chunks aligned to doc_vecs rows; queries aligned to query_vecs rows."""
     import faiss  # lazy — see module header note on libomp/MPS segfault
     doc = normalize(doc_vecs)
@@ -100,10 +146,11 @@ def evaluate(*, label, model_key, model_name, backend, device, dim,
     index = faiss.IndexFlatIP(doc.shape[1])
     index.add(doc)
 
+    candidate_k = max(k, int(candidate_k or k))
     per_query = []
     for qi, row in enumerate(queries):
         t = time.perf_counter()
-        D, I = index.search(qv[qi:qi + 1], k)
+        D, I = index.search(qv[qi:qi + 1], candidate_k)
         latency_ms = (time.perf_counter() - t) * 1000.0
         hits = []
         for rank, (idx, score) in enumerate(zip(I[0], D[0]), 1):
@@ -128,7 +175,8 @@ def evaluate(*, label, model_key, model_name, backend, device, dim,
             "notes": row.get("notes", ""),
             "lang": row.get("lang", "?"),
             "hit_at_1": _hit(paths[:1], expected),
-            "hit_at_k": _hit(paths, expected),
+            "hit_at_k": _hit(paths[:k], expected),
+            "hit_at_10": _hit(paths[:10], expected),
             "top1_path": paths[0] if paths else None,
             "latency_ms": round(latency_ms, 1),
             "results": hits,
@@ -139,4 +187,5 @@ def evaluate(*, label, model_key, model_name, backend, device, dim,
         device=device, dim=int(doc.shape[1]), chunks_count=len(chunks),
         per_query=per_query, k=k, index_seconds=index_seconds,
         embed_seconds=embed_seconds, telemetry=telemetry, out_path=out_path,
+        candidate_k=candidate_k, fingerprint=fingerprint,
     )

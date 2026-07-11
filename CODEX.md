@@ -132,6 +132,26 @@ This server intentionally exposes a single consolidated tool set (no legacy/`*_v
 - `CODE_SEARCH_HYBRID_AUTOBUILD`: background FTS build on fallback (default on).
 - `HF_HUB_OFFLINE`: force offline model loading.
 
+## Search quality and fallback metadata
+
+`search_code` preserves its existing `results` contract and also reports:
+
+- `search_mode_requested` and `search_mode_used`
+- `quality_state`: `semantic`, `semantic_degraded`, `fts`, `fts_degraded`, or
+  `semantic_unavailable`
+- `requested_device` and `actual_device`
+- `fallback_events`
+- `semantic_available`
+
+The production fallback order is the configured semantic device, the same model on
+CPU, then FTS. A different embedding model is never substituted for an existing
+vector index. Consumers must inspect the metadata rather than treating a successful
+tool call as proof that semantic retrieval ran.
+
+The Gate-C bake-off is documented in `benchmarks/README_bakeoff.md`. Existing arm
+JSON is reused only when its schema-v2 fingerprint matches the corpus, queries,
+configuration, arm and runner source.
+
 ## Architecture
 
 ### Core Components

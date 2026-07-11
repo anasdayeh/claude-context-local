@@ -490,7 +490,9 @@ class CodeSearchServer:
                 embedder_status.get("status") == "failed"
                 and search_mode == "semantic"
             ):
-                return self._semantic_unavailable_response(fallback_mode="none")
+                return self._semantic_unavailable_response(
+                    fallback_mode="none", search_mode_requested=search_mode
+                )
 
             results = self._searcher.search(
                 query,
@@ -501,13 +503,32 @@ class CodeSearchServer:
             )
 
             tool_results = [res.to_search_tool_dict() for res in results]
-            response: Dict[str, Any] = {"results": tool_results}
+            mode_used = getattr(self._searcher, "last_search_mode_used", search_mode)
+            current_status = self.get_embedder_status()
+            semantic_available = mode_used != "fts"
+            quality_state = (
+                "fts_degraded"
+                if mode_used == "fts" and search_mode != "fts"
+                else "fts"
+                if mode_used == "fts"
+                else "semantic_degraded"
+                if current_status.get("degraded") and semantic_available
+                else "semantic"
+            )
+            response: Dict[str, Any] = {
+                "results": tool_results,
+                "search_mode_requested": search_mode,
+                "search_mode_used": mode_used,
+                "quality_state": quality_state,
+                "semantic_available": semantic_available,
+                "requested_device": current_status.get("requested_device"),
+                "actual_device": current_status.get("actual_device") or current_status.get("device"),
+                "fallback_events": list(current_status.get("fallback_events") or []),
+            }
             if isinstance(self._searcher, IntelligentSearcher):
-                mode_used = getattr(self._searcher, "last_search_mode_used", None)
                 if mode_used == "fts" and search_mode != "fts":
                     response.update(
                         {
-                            "semantic_available": False,
                             "fallback_mode": "fts",
                             "error_code": "embedder_init_failed",
                             "error": self.get_embedder_status().get("error"),
@@ -521,8 +542,13 @@ class CodeSearchServer:
                 return self._semantic_unavailable_response(
                     error=str(e),
                     fallback_mode="none",
+                    search_mode_requested=search_mode,
                 )
-            return _error(str(e))
+            return self._semantic_unavailable_response(
+                error=str(e),
+                fallback_mode="none",
+                search_mode_requested=search_mode,
+            )
 
     def find_similar_code(self, chunk_id: str, k: int = 5) -> List[Dict[str, Any]]:
         """Find chunks functionally similar to a given chunk."""
@@ -734,6 +760,7 @@ class CodeSearchServer:
         *,
         error: Optional[str] = None,
         fallback_mode: str = "none",
+        search_mode_requested: str = "semantic",
     ) -> Dict[str, Any]:
         embedder_status = self.get_embedder_status()
         return {
@@ -741,6 +768,12 @@ class CodeSearchServer:
             "error_code": "embedder_init_failed",
             "semantic_available": False,
             "fallback_mode": fallback_mode,
+            "search_mode_requested": search_mode_requested,
+            "search_mode_used": fallback_mode if fallback_mode != "none" else "none",
+            "quality_state": "fts_degraded" if fallback_mode == "fts" else "semantic_unavailable",
+            "requested_device": embedder_status.get("requested_device"),
+            "actual_device": embedder_status.get("actual_device") or embedder_status.get("device"),
+            "fallback_events": list(embedder_status.get("fallback_events") or []),
             "results": [],
         }
 

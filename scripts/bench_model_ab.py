@@ -34,6 +34,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import sys
@@ -112,6 +113,13 @@ def run(args: argparse.Namespace) -> int:
         print(f"repo not found: {repo}", file=sys.stderr)
         return 2
     queries = _load_queries(Path(args.queries).expanduser())
+    from scripts.bench_dataset import validate_query_labels
+    from scripts import bench_artifacts
+    corpus_paths = [
+        {"path": relative}
+        for relative, _path in bench_artifacts.selected_tree_files(repo, args.file_patterns)
+    ]
+    validate_query_labels(corpus_paths, queries, max_chunk_fraction=1.0)
 
     from mcp_server.code_search_server import CodeSearchServer
 
@@ -136,14 +144,15 @@ def run(args: argparse.Namespace) -> int:
 
     model_info = server.embedder.get_model_info()
     # warmup (exclude first-call load cost from per-query latency)
-    searcher.search(queries[0]["query"], k=args.k, search_mode="semantic")
+    candidate_k = max(args.k, 10)
+    searcher.search(queries[0]["query"], k=candidate_k, search_mode="semantic")
 
     per_query = []
     for row in queries:
         q = row["query"]
         expected = row.get("expected_files", [])
         t = time.perf_counter()
-        results = searcher.search(q, k=args.k, search_mode="semantic")
+        results = searcher.search(q, k=candidate_k, search_mode="semantic")
         latency_ms = (time.perf_counter() - t) * 1000.0
         hits = []
         for rank, r in enumerate(results, 1):
@@ -164,7 +173,8 @@ def run(args: argparse.Namespace) -> int:
             "notes": row.get("notes", ""),
             "lang": row.get("lang", "?"),
             "hit_at_1": _hit(paths[:1], expected),
-            "hit_at_k": _hit(paths, expected),
+            "hit_at_k": _hit(paths[:args.k], expected),
+            "hit_at_10": _hit(paths[:10], expected),
             "top1_path": paths[0] if paths else None,
             "latency_ms": round(latency_ms, 1),
             "results": hits,
@@ -180,6 +190,7 @@ def run(args: argparse.Namespace) -> int:
             "n": m,
             "hit_at_1_rate": round(sum(p["hit_at_1"] for p in rows_lg) / m, 3) if m else None,
             "hit_at_k_rate": round(sum(p["hit_at_k"] for p in rows_lg) / m, 3) if m else None,
+            "recall_at_10_rate": round(sum(p["hit_at_10"] for p in rows_lg) / m, 3) if m else None,
         }
     import psutil as _ps
     summary = {
@@ -192,10 +203,12 @@ def run(args: argparse.Namespace) -> int:
         "store": os.environ["CODE_SEARCH_STORAGE"],
         "repo": str(repo),
         "k": args.k,
+        "candidate_k": candidate_k,
         "index_seconds": round(index_secs, 2),
         "chunks_added": index_result.get("chunks_added"),
         "hit_at_1_rate": round(sum(p["hit_at_1"] for p in per_query) / n, 3) if n else None,
         "hit_at_k_rate": round(sum(p["hit_at_k"] for p in per_query) / n, 3) if n else None,
+        "recall_at_10_rate": round(sum(p["hit_at_10"] for p in per_query) / n, 3) if n else None,
         "mean_latency_ms": round(sum(p["latency_ms"] for p in per_query) / n, 1) if n else None,
         "query_count": n,
         "per_lang": per_lang,
@@ -203,10 +216,27 @@ def run(args: argparse.Namespace) -> int:
         "ram_free_pct_mean_during_index": ram.mean_free,
         "system_total_gb": round(_ps.virtual_memory().total / 1e9, 1),
     }
-    payload = {"summary": summary, "per_query": per_query}
+    from scripts.bench_dataset import ranking_metrics
+    summary.update(ranking_metrics(per_query, k=args.k))
+    fingerprint = bench_artifacts.build_direct_run_fingerprint(
+        repo_path=repo,
+        query_path=Path(args.queries).expanduser(),
+        arm={"label": args.label, "model_key": args.model_key, "k": args.k,
+             "file_patterns": args.file_patterns},
+        patterns=args.file_patterns,
+        source_paths=[Path(__file__)],
+    )
+    payload = {
+        "artifact": {
+            "schema_version": bench_artifacts.SCHEMA_VERSION,
+            "status": "complete",
+            "fingerprint": fingerprint,
+        },
+        "summary": summary,
+        "per_query": per_query,
+    }
     out = Path(args.out).expanduser()
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(payload, indent=2))
+    bench_artifacts.atomic_write_json(out, payload)
     print(f"[{args.label}] hit@1={summary['hit_at_1_rate']} hit@{args.k}={summary['hit_at_k_rate']} "
           f"mean_latency={summary['mean_latency_ms']}ms dim={summary['embedding_dimension']} "
           f"index={summary['index_seconds']}s -> {out}")
@@ -214,13 +244,19 @@ def run(args: argparse.Namespace) -> int:
 
 
 def render(args: argparse.Namespace) -> int:
+    from scripts.bench_dataset import paired_comparison, pareto_frontier, validate_comparable_runs
+    from scripts.bench_artifacts import atomic_write_json, atomic_write_text
+
     runs = [json.loads(Path(p).expanduser().read_text()) for p in args.inputs]
+    validate_comparable_runs(runs)
     labels = [r["summary"]["label"] for r in runs]
 
     # machine report
     report_json = {
         "summaries": [r["summary"] for r in runs],
         "queries": [],
+        "paired_comparisons": [],
+        "pareto_frontier": pareto_frontier([r["summary"] for r in runs]),
     }
     # align per-query by index (same queries.jsonl order across runs)
     n = min(len(r["per_query"]) for r in runs)
@@ -231,12 +267,28 @@ def render(args: argparse.Namespace) -> int:
             pq = r["per_query"][i]
             entry["models"][r["summary"]["label"]] = {
                 "hit_at_1": pq["hit_at_1"], "hit_at_k": pq["hit_at_k"],
+                "hit_at_10": pq.get("hit_at_10"),
                 "top1_path": pq["top1_path"], "latency_ms": pq["latency_ms"],
                 "results": pq["results"],
             }
         report_json["queries"].append(entry)
-    Path(args.out_json).expanduser().parent.mkdir(parents=True, exist_ok=True)
-    Path(args.out_json).expanduser().write_text(json.dumps(report_json, indent=2))
+    for left, right in itertools.combinations(runs, 2):
+        metrics = ["hit_at_1", "hit_at_k"]
+        if all(all(metric in row for row in run["per_query"][:n]) for run in runs for metric in ["hit_at_10"]):
+            metrics.append("hit_at_10")
+        for metric in metrics:
+            comparison = paired_comparison(
+                [row[metric] for row in left["per_query"][:n]],
+                [row[metric] for row in right["per_query"][:n]],
+                seed=0,
+            )
+            report_json["paired_comparisons"].append({
+                "left": left["summary"]["label"],
+                "right": right["summary"]["label"],
+                "metric": metric,
+                **comparison,
+            })
+    atomic_write_json(Path(args.out_json).expanduser(), report_json)
 
     # human/agent-readable markdown
     L = []
@@ -254,9 +306,29 @@ def render(args: argparse.Namespace) -> int:
     L.append(row("backend", "backend"))
     L.append(row("hit@1 rate", "hit_at_1_rate"))
     L.append(row("hit@k rate", "hit_at_k_rate"))
+    L.append(row("recall@10 rate", "recall_at_10_rate"))
+    L.append(row("MRR", "mrr"))
+    L.append(row("nDCG@k", "ndcg_at_k"))
     L.append(row("mean latency (ms)", "mean_latency_ms"))
     L.append(row("index seconds", "index_seconds"))
     L.append(row("chunks", "chunks_added"))
+    L.append("")
+    L.append("## Descriptive Pareto frontier\n")
+    L.append(
+        "Non-dominated quality/runtime tradeoffs: **"
+        + ", ".join(report_json["pareto_frontier"])
+        + "**. This is descriptive; paired uncertainty still controls winner claims.\n"
+    )
+    L.append("## Paired uncertainty\n")
+    L.append("A model is not declared better when the paired comparison is inconclusive.\n")
+    L.append("| left | right | metric | difference | 95% bootstrap CI | exact p | conclusion |")
+    L.append("| --- | --- | --- | ---: | --- | ---: | --- |")
+    for comparison in report_json["paired_comparisons"]:
+        L.append(
+            f"| {comparison['left']} | {comparison['right']} | {comparison['metric']} | "
+            f"{comparison['difference']} | {comparison['bootstrap_95_ci']} | "
+            f"{comparison['exact_p']} | {comparison['conclusion']} |"
+        )
     L.append("")
     L.append("## Per-query, side by side\n")
     for i in range(n):
@@ -271,7 +343,7 @@ def render(args: argparse.Namespace) -> int:
             for h in pq["results"][:5]:
                 L.append(f"- `{h['rank']}` `{h['path']}` (score={h['score']}, {h['name']}) — {h['excerpt'][:120]}")
             L.append("")
-    Path(args.out_md).expanduser().write_text("\n".join(L))
+    atomic_write_text(Path(args.out_md).expanduser(), "\n".join(L))
     print(f"rendered {args.out_md} and {args.out_json} for models: {', '.join(labels)}")
     return 0
 

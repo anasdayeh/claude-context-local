@@ -20,6 +20,11 @@ defaults:
   k: 5
   batch: 8
   log_level: INFO
+  handoff_min_delay_seconds: 15       # let Metal allocations drain after process exit
+  handoff_min_free_gb: 4              # require stable unified-memory headroom
+  handoff_stable_samples: 3
+  handoff_poll_seconds: 5
+  handoff_timeout_seconds: 180
 
 # Query-side instruction reused by the Qwen family (documents get NO prefix).
 _anchors:
@@ -46,6 +51,7 @@ arms:
     doc_instruction: null
     expected_dim: 2560
     dtype: bfloat16
+    batch: 1                           # 4B bf16 on 16 GB unified memory
     enabled: true
 
   - label: qwen_mlx                    # 4-bit MLX (fast/light) — PROVEN working
@@ -65,6 +71,7 @@ arms:
     query_instruction: "<instruct>Given a code search query, retrieve relevant code and documentation that answer the query\n<query>"
     doc_instruction: null
     trust_remote_code: true
+    batch: 2                           # production-capped chunks keep MPS activation bounded
     expected_dim: null                 # auto-detect at runtime; assert once known
     enabled: true
 
@@ -88,3 +95,5 @@ reranker:
   model_id: Qwen/Qwen3-Reranker-0.6B   # also downloaded: Qwen3-Reranker-4B
   runtime: torch
   top_n: 20                            # rescore this many FAISS hits, keep best k
+  batch: 1                             # bounded for a 16 GB unified-memory Mac
+  max_length: 2048                     # tokens; code chunks are production-capped upstream

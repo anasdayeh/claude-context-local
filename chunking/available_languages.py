@@ -175,7 +175,9 @@ def get_available_language():
     try:
         import tree_sitter_xml as tsxml
         if 'xml' not in res:
-            res['xml'] = Language(tsxml.language())
+            language_fn = getattr(tsxml, "language_xml", None) or getattr(tsxml, "language", None)
+            if language_fn is not None:
+                res['xml'] = Language(language_fn())
     except ImportError:
         logger.debug("tree-sitter-xml not installed")
 

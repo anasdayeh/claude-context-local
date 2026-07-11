@@ -33,6 +33,7 @@ class SentenceTransformerModel(EmbeddingModel):
             (Qwen instruction-aware retrieval); documents are never prefixed.
         """
         super().__init__(device)
+        self._requested_device = self._device
         self.model_name = model_name
         self.cache_dir = cache_dir
         self.trust_remote_code = trust_remote_code
@@ -45,10 +46,12 @@ class SentenceTransformerModel(EmbeddingModel):
         requested_backend = (backend or env_backend or "torch").strip().lower()
         if requested_backend not in {"torch", "onnx"}:
             requested_backend = "torch"
+        self._requested_backend = requested_backend
         self.backend = requested_backend
         self._model_loaded = False
         self._fallback_attempted = False
         self._load_error: Optional[str] = None
+        self._fallback_events: List[Dict[str, str]] = []
 
     def _effective_device_for_backend(self, backend: str) -> str:
         if backend == "onnx" and self._device == "mps":
@@ -130,6 +133,7 @@ class SentenceTransformerModel(EmbeddingModel):
                     f"Failed to load ONNX backend, falling back to PyTorch: {e}"
                 )
                 self.backend = "torch" # Update state
+                self._record_fallback("onnx", "torch", "onnx_error")
                 self._apply_torch_thread_limits()
                 return SentenceTransformer(
                     model_source,
@@ -227,22 +231,53 @@ class SentenceTransformerModel(EmbeddingModel):
 
             # First fallback: ONNX -> torch
             if self.backend == "onnx":
+                previous_backend = self.backend
                 self.backend = "torch"
+                self._record_fallback(previous_backend, "torch", "onnx_error")
                 self._fallback_attempted = True
                 self._reset_model()
                 try:
-                    return self.model.encode(texts, **kwargs)
+                    result = self.model.encode(texts, **kwargs)
+                    return result
                 except Exception:
                     pass
 
             # Second fallback: MPS -> CPU
             if self._device == "mps":
+                reason = "mps_oom" if self._is_oom_error(e) else "mps_error"
                 self._device = "cpu"
                 self._fallback_attempted = True
                 self._reset_model()
-                return self.model.encode(texts, **kwargs)
+                result = self.model.encode(texts, **kwargs)
+                self._record_fallback("mps", "cpu", reason)
+                return result
 
             raise
+
+    @staticmethod
+    def _is_oom_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "out of memory" in message or "oom" in message
+
+    def _record_fallback(self, source: str, target: str, reason: str) -> None:
+        event = {"from": source, "to": target, "reason": reason}
+        if event not in self._fallback_events:
+            self._fallback_events.append(event)
+
+    def get_execution_info(self) -> Dict[str, Any]:
+        """Return truthful execution provenance for callers and benchmark artifacts."""
+        actual_device = self._device
+        if self._model_loaded and "model" in self.__dict__:
+            actual_device = str(getattr(self.__dict__["model"], "device", actual_device))
+        events = [dict(event) for event in self._fallback_events]
+        return {
+            "requested_device": self._requested_device,
+            "actual_device": actual_device,
+            "requested_backend": getattr(self, "_requested_backend", self.backend),
+            "actual_backend": self.backend,
+            "fallback_events": events,
+            "degraded": bool(events),
+        }
 
     def encode_query(self, texts: List[str], **kwargs) -> np.ndarray:
         """Encode queries using model-specific method if available."""
@@ -282,15 +317,17 @@ class SentenceTransformerModel(EmbeddingModel):
     def get_model_info(self) -> Dict[str, Any]:
         """Get model information."""
         if not self._model_loaded:
-            return {
+            info = {
                 "status": "failed" if self._load_error else "not_loaded",
                 "model_name": self.model_name,
                 "device": self._effective_device_for_backend(self.backend),
                 "backend": self.backend,
                 "error": self._load_error,
             }
+            info.update(self.get_execution_info())
+            return info
 
-        return {
+        info = {
             "model_name": self.model_name,
             "embedding_dimension": self.get_embedding_dimension(),
             "max_seq_length": getattr(self.model, 'max_seq_length', 'unknown'),
@@ -299,6 +336,8 @@ class SentenceTransformerModel(EmbeddingModel):
             "status": "loaded",
             "error": None,
         }
+        info.update(self.get_execution_info())
+        return info
 
     def cleanup(self):
         """Clean up model resources."""

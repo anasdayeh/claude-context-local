@@ -9,6 +9,7 @@ import numpy as np
 
 from chunking.code_chunk import CodeChunk
 from embeddings.embedding_models_register import AVAILABLE_MODELS
+from embeddings.content_formatter import format_embedding_content
 from common_utils import get_available_memory_bytes
 
 class EmbeddingResult:
@@ -180,52 +181,7 @@ class CodeEmbedder:
 
     def create_embedding_content(self, chunk: CodeChunk, max_chars: int = 2048) -> str:
         """Create formatted content string for embedding."""
-        parts = []
-        name = chunk.name or "unknown"
-        chunk_type = chunk.chunk_type or "unknown"
-        
-        parts.append(f"Name: {name}")
-        parts.append(f"Type: {chunk_type}")
-        
-        if getattr(chunk, 'parent_name', None):
-             parts.append(f"Context: {chunk.parent_name}")
-
-        tags = chunk.tags or []
-        if tags:
-            parts.append(f"Tags: {', '.join(tags)}")
-
-        docstring = chunk.docstring or ""
-        overhead = sum(len(p) + 1 for p in parts) + 10 
-        
-        remaining_budget = max_chars - overhead
-        docstring_len = len(docstring)
-        
-        if remaining_budget <= 20:
-             return f"Name: {name}\n{(chunk.content or '')[:max_chars//2]}"
-
-        docstring_budget = min(docstring_len, int(remaining_budget * 0.3))
-        if docstring_len < remaining_budget * 0.5:
-             docstring_budget = docstring_len
-             
-        if docstring:
-             parts.append(f"Docstring: {docstring[:docstring_budget]}")
-             
-        current_used = sum(len(p) + 1 for p in parts)
-        code_budget = max(0, max_chars - current_used)
-        
-        content = chunk.content or ""
-        header = "\n".join(parts)
-        
-        if not content:
-            return header
-            
-        full_text = f"{header}\n{content}"
-        
-        if len(full_text) > max_chars:
-            allowed_content_len = max(0, max_chars - len(header) - 1)
-            return f"{header}\n{content[:allowed_content_len]}"
-            
-        return full_text
+        return format_embedding_content(chunk, max_chars=max_chars)
 
     def embed_chunks(self, chunks: List[CodeChunk], batch_size: int = 32) -> List[EmbeddingResult]:
         """Generate embeddings for code chunks in batches."""
@@ -377,20 +333,24 @@ class CodeEmbedder:
         if model is None:
             return False
 
-        changed = False
-        if hasattr(model, "_device"):
-            if getattr(model, "_device", None) != "cpu":
-                model._device = "cpu"
-                changed = True
+        if not hasattr(model, "_device"):
+            return False
+        previous_device = getattr(model, "_device", None)
+        if previous_device in {None, "cpu"}:
+            return False
+
+        model._device = "cpu"
+        record = getattr(model, "_record_fallback", None)
+        if callable(record):
+            record(str(previous_device), "cpu", "oom")
         if hasattr(model, "_fallback_attempted"):
             model._fallback_attempted = True
         if hasattr(model, "_reset_model"):
             try:
                 model._reset_model()
-                changed = True
             except Exception:
                 return False
-        return changed
+        return True
 
     def _resolve_min_free_ram_bytes(self) -> int:
         raw = ""
@@ -452,6 +412,12 @@ class CodeEmbedder:
             "device": info.get("device"),
             "error": info.get("error"),
             "model_name": info.get("model_name", self.model_name),
+            "requested_device": info.get("requested_device", info.get("device")),
+            "actual_device": info.get("actual_device", info.get("device")),
+            "requested_backend": info.get("requested_backend", info.get("backend")),
+            "actual_backend": info.get("actual_backend", info.get("backend")),
+            "fallback_events": list(info.get("fallback_events") or []),
+            "degraded": bool(info.get("degraded")),
         }
 
     def is_available(self) -> bool:

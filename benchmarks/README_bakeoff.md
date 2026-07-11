@@ -1,8 +1,10 @@
 # Gate-C embedding bake-off — how it works & how to run
 
 Quality-first comparison of embedding models for code search on a **frozen BRIDGE
-corpus**, judged **blind** by an agent. Every arm embeds the *identical* canonical
-chunk set, so the embedding model is the only variable.
+corpus**, judged **blind** by an agent. The default chunk dump uses the same
+2,048-character production formatter as `CodeEmbedder`, so every arm receives the
+same bounded input. Use `dump_chunks.py --input-mode raw` only for an explicitly
+separate native-context experiment.
 
 ## One command (run at go-ahead)
 
@@ -12,9 +14,13 @@ uv run python scripts/run_bakeoff.py --dry-run     # show the plan, run nothing
 uv run python scripts/run_bakeoff.py               # run all pending arms + rerank + blind
 ```
 
-Runs each arm **sequentially** (never two models resident at once — 16 GB-safe),
-light→heavy, **skipping** any arm whose `benchmarks/arms/arm_<label>.json` already
-exists (resumable). Flags: `--only <labels>`, `--skip <labels>`, `--force`,
+Runs each arm **sequentially** under an exclusive advisory lock (never two model
+jobs from this harness at once), light→heavy, **skipping only fingerprint-valid
+complete artifacts**. Corpus, queries, configuration, runner code, and arm settings
+are fingerprinted; stale or legacy JSON is rerun. Between Metal workloads the
+orchestrator waits for stable unified-memory headroom instead of immediately loading
+the next model. Flags: `--only <labels>`,
+`--skip <labels>`, `--force`,
 `--no-rerank`, `--no-blind`. For an unattended/overnight run, launch it as a
 background job and read `benchmarks/arms/arm_*.log`.
 
@@ -27,15 +33,17 @@ background job and read `benchmarks/arms/arm_*.log`.
 | bge_code | torch | BAAI/bge-code-v1 | code specialist, last-token pooling |
 | nomic_code_gguf | gguf | nomic-embed-code Q6_K | code specialist (7B) via llama.cpp |
 | qwen_bf16 | torch | Qwen3-Embedding-4B | full-precision (~8 GB, heaviest) |
-| reranker | torch | Qwen3-Reranker-0.6B | rescages gemma's top-N |
+| reranker | torch | Qwen3-Reranker-0.6B | official generative CrossEncoder; reranks the real top-N |
 
 Each arm carries its **card-verified** query instruction / pooling in `arms.yaml`.
 `${var}` interpolates paths; `BENCH_PATH_<KEY>` env overrides any path.
 
 ## Scripts
 
-- `dump_chunks.py` — one canonical chunk set (`chunk_dump.json`, 1845 chunks) via the
-  server's MultiLanguageChunker, shared by all arms.
+- `dump_chunks.py` — canonical production-formatted chunk set via the server's
+  MultiLanguageChunker and shared embedding formatter.
+- `bench_artifacts.py` — schema-v2 fingerprints, reuse admission, atomic JSON writes.
+- `bench_dataset.py` — label admission, MRR/nDCG, paired exact tests and bootstrap CIs.
 - `bench_arm_torch.py` — torch arms (gemma/qwen_bf16/bge). `--arm <label>`.
 - `bench_arm_mlx.py` — MLX arm (runs in `.venv-mlx`).
 - `bench_arm_gguf.py` — GGUF arm (runs in `.venv-gguf`).
@@ -63,10 +71,32 @@ Each arm carries its **card-verified** query instruction / pooling in `arms.yaml
 - **nomic GGUF pooling** — llama-cpp-python doesn't auto-read it; runner sets
   `pooling_type=LAST` explicitly (nomic-embed-code uses last-token, not mean).
 - Every run records **RAM telemetry** so speed is never confused with contention.
+- Gate B is enforced. Non-finite, wrong-dimension, non-normalizable, or materially
+  nondeterministic output fails the arm.
+- Torch arms report the **actual** device. An MPS→CPU fallback is retained for
+  quality analysis but marked degraded and excluded from accelerator-speed claims.
+- `run_bakeoff.py` returns nonzero when an arm, reranker, or report stage fails.
+- Interrupt handling targets only the subprocess group owned by the harness; it never
+  uses application-wide `pkill` patterns.
+- Arm JSON and generated reports are written through atomic replacement, and renderers
+  reject runs with different corpus fingerprints or query ordering.
+- Sentence Transformers 5.6+ is required so the official Qwen causal-LM reranker is
+  scored through its native `LogitScore` adapter rather than a random classifier head.
 
-## Status (2026-07-09)
+## Interpreting results
 
-- Full BRIDGE Gemma **daily-driver index**: complete (730 files, 7615 chunks).
-- **Gemma arm** on the corpus: done — hit@1 0.481, hit@5 0.778 (ts is weakest: 0.27).
-- All other arms + reranker: **built & verified model-free; pending the go-ahead run.**
-- Blind judge / render / config / orchestrator: verified on synthetic data.
+- Primary agent metrics: recall@5/10, MRR, nDCG and reranker lift. Hit@1 remains
+  useful but is not the sole selection criterion.
+- Reports include paired discordance, exact p-values, and bootstrap confidence
+  intervals. Small inconclusive differences are not called winners.
+- Query labels must exist in the sampled corpus and must not match an excessive
+  fraction of files/chunks. Broad labels such as `Data`, `CV`, or `Month` are rejected.
+- `quality_state=semantic_degraded` means the same model completed through a device
+  fallback. `fts_degraded` means semantic retrieval was unavailable and FTS answered.
+
+## Status (2026-07-10)
+
+All artifacts produced by the pre-schema-v2 harness are provisional. In particular,
+the earlier BGE arm silently fell back to CPU and the earlier reranker received only
+five candidates despite requesting twenty. Regenerate the production-formatted corpus
+and rerun the hardened harness before choosing a long-term default.

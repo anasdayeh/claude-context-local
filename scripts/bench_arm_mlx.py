@@ -96,19 +96,27 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--model", default="mlx-community/Qwen3-Embedding-4B-4bit-DWQ")
     ap.add_argument("--label", default="qwen_mlx")
+    ap.add_argument("--config", default=None)
     ap.add_argument("--k", type=int, default=5)
     ap.add_argument("--batch", type=int, default=8)
+    ap.add_argument("--candidate-k", type=int, default=20)
     ap.add_argument("--limit", type=int, default=None, help="cap #chunks for a smoke run")
     a = ap.parse_args()
     os.environ.setdefault("HF_HOME", "/Volumes/Anas_Repos/AppState/caches/huggingface")
 
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import _arm_core as core
+    import bench_common as bc
+
+    cfg = bc.load_config(a.config)
+    arm = dict(bc.get_arm(cfg, a.label))
+    arm["model_id"] = a.model
 
     chunks = json.loads(Path(a.chunks).read_text())
     if a.limit:
         chunks = chunks[:a.limit]
     queries = _load_jsonl(a.queries)
+    dataset_validation = bc.validate_dataset(chunks, queries)
 
     import mlx_embeddings as me
     t0 = time.perf_counter()
@@ -126,17 +134,19 @@ def main():
         q_vecs = embed_texts(model, tok, q_texts, batch=a.batch)
         embed_s = time.perf_counter() - te
 
-    det = bool(np.allclose(doc_vecs[:8], dv2, atol=1e-4))
     gate = core.gate_b_checks(doc_vecs, expected_dim=2560)
-    gate["deterministic"] = det
+    gate.update(core.determinism_check(doc_vecs[:8], dv2))
     print("GATE B:", json.dumps(gate), flush=True)
+    core.validate_gate_b(gate)
 
     payload = core.evaluate(
         label=a.label, model_key=a.model, model_name=a.model, backend="mlx",
         device="mps/metal", dim=int(doc_vecs.shape[1]),
         chunks=chunks, doc_vecs=doc_vecs, queries=queries, query_vecs=q_vecs,
-        k=a.k, embed_seconds=embed_s,
-        telemetry={**ram.stat(), "load_seconds": round(load_s, 1), "gate_b": gate},
+        k=a.k, candidate_k=a.candidate_k, embed_seconds=embed_s,
+        telemetry={**ram.stat(), "load_seconds": round(load_s, 1), "gate_b": gate,
+                   "dataset_validation": dataset_validation},
+        fingerprint=bc.run_fingerprint(cfg, arm),
         out_path=a.out,
     )
     s = payload["summary"]

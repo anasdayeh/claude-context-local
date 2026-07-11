@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-07-10
+
+### Fixed
+- Made MPS→CPU embedding fallback observable through requested/actual device and structured fallback events; benchmark artifacts no longer claim MPS timing after CPU fallback.
+- Enforced Gate-B finiteness, dimension, normalization and numerical-determinism checks.
+- Persisted the real reranker candidate depth independently from hit@k scoring.
+- Replaced existence-only benchmark resume with schema-v2 input/source fingerprints and atomic writes.
+- Made the benchmark orchestrator exclusive and nonzero on required-stage failures.
+- Added stable-memory handoff gates between Metal models and process-group-scoped shutdown.
+- Rejected report inputs with different corpus identities/query ordering and made reports atomic.
+- Upgraded to Sentence Transformers 5.6 native generative CrossEncoder support for the official Qwen3 reranker.
+- Added compatibility with the current `tree_sitter_xml.language_xml()` binding API.
+
+### Added
+- Shared production embedding-input formatting between indexing and corpus dumps.
+- Dataset admission checks that reject missing or overly broad expected-file labels.
+- MRR, nDCG, paired exact tests and deterministic bootstrap confidence intervals.
+- Stable MCP search-quality metadata for semantic, CPU-degraded semantic and FTS-degraded responses.
+
 ## 2026-04-16
 
 ### Fixed
